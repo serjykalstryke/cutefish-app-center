@@ -26,7 +26,7 @@ static void click(ui::Window& w,ui::View* v) {
 int main(int argc,char** argv) {
     ui::Application app(argc,argv,ui::Application::Platform::Headless);
     Store store(app,false);store.show();auto& w=store.window();
-    w.grab();assert(findLabel(w.contentView(),"Cutefish Store"));
+    w.grab();assert(app.mainMenu());assert(app.mainMenu()->submenu(0)->role()==ui::MenuRole::Application);
     click(w,findLabel(w.contentView(),"Installed"));
     base::Timer poll(&app.loop());int stage=0,ticks=0;
     poll.onTimeout=[&] {
