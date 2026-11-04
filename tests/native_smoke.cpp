@@ -1,4 +1,4 @@
-#define main cutefish_store_program_main
+#define main cutefish_app_center_program_main
 #include "../src/main.cpp"
 #undef main
 #include <cassert>
@@ -25,7 +25,7 @@ static void click(ui::Window& w,ui::View* v) {
 }
 int main(int argc,char** argv) {
     ui::Application app(argc,argv,ui::Application::Platform::Headless);
-    Store store(app,false);store.show();auto& w=store.window();
+    AppCenter store(app,false);store.show();auto& w=store.window();
     w.grab();assert(app.mainMenu());assert(app.mainMenu()->submenu(0)->role()==ui::MenuRole::Application);
     click(w,findLabel(w.contentView(),"Installed"));
     base::Timer poll(&app.loop());int stage=0,ticks=0;
@@ -39,10 +39,10 @@ int main(int argc,char** argv) {
         } else if(stage==1 && ready && containsLabel(w.contentView(),"snapd") && !containsLabel(w.contentView(),"300 entries")) {
             w.grab().savePng("work/installed-smoke.png");
             click(w,findLabel(w.contentView(),"Discover"));w.grab();
-            assert(findLabel(w.contentView(),"A home for your apps"));
-            click(w,findLabel(w.contentView(),"Web browsers"));stage=2;
+            assert(findLabel(w.contentView(),"Explore categories"));
+            click(w,findLabel(w.contentView(),"Internet"));stage=2;
         } else if(stage==2 && containsLabel(w.contentView(),"best matches first")) {
-            assert(findSearch(w.contentView())->text()=="Web browsers");
+            assert(findSearch(w.contentView())->text()=="internet");
             assert(findLabel(w.contentView(),"Brave"));
             assert(findLabel(w.contentView(),"Google Chrome"));
             assert(findLabel(w.contentView(),"Firefox"));

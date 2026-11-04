@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('backend', Path(__file__).parents[1] / 'backend/store_backend.py')
+spec = importlib.util.spec_from_file_location('backend', Path(__file__).parents[1] / 'backend/app_center_backend.py')
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
 
@@ -50,27 +50,27 @@ class BackendTests(unittest.TestCase):
     def test_changed_image_rejected_before_apply(self):
         p=self.image(); approved=b.plan(b.inspect_local(str(p)),'install')
         p.write_bytes(p.read_bytes()+b'changed')
-        with self.assertRaises(b.StoreError): b.apply(approved)
+        with self.assertRaises(b.AppCenterError): b.apply(approved)
         self.assertEqual(b.appimage_items(),[])
     def test_duplicate_import_keeps_existing_copy(self):
         target=b.inspect_local(str(self.image())); b.apply(b.plan(target,'install'))
-        with self.assertRaises(b.StoreError): b.apply(b.plan(target,'install'))
+        with self.assertRaises(b.AppCenterError): b.apply(b.plan(target,'install'))
         self.assertEqual(len(b.appimage_items()),1)
     def test_executable_without_appimage_signature_is_rejected(self):
         p=self.root/'fake.AppImage'; p.write_bytes(b'\x7fELF'+bytes(100))
-        with self.assertRaises(b.StoreError): b.inspect_local(str(p))
+        with self.assertRaises(b.AppCenterError): b.inspect_local(str(p))
     def test_deb_inspection_and_hash(self):
         package=self.root/'pkg'; (package/'DEBIAN').mkdir(parents=True)
-        (package/'DEBIAN/control').write_text('Package: cutefish-store-test-fixture\nVersion: 1.0\nArchitecture: all\nMaintainer: Test <test@example.invalid>\nDescription: A local inspection fixture\n')
+        (package/'DEBIAN/control').write_text('Package: cutefish-app-center-test-fixture\nVersion: 1.0\nArchitecture: all\nMaintainer: Test <test@example.invalid>\nDescription: A local inspection fixture\n')
         dest=self.root/'test file.deb'
         subprocess.run(['dpkg-deb','--build','--root-owner-group',str(package),str(dest)],check=True,stdout=subprocess.DEVNULL)
         item=b.inspect_local(str(dest))
-        self.assertEqual(item['id'],'cutefish-store-test-fixture')
+        self.assertEqual(item['id'],'cutefish-app-center-test-fixture')
         self.assertEqual(item['sha256'],b.file_hash(dest))
         self.assertEqual(item['architecture'],'all')
     def test_shell_metacharacters_in_ids_are_rejected(self):
         for source in ['deb','snap','flatpak','appimage']:
-            with self.assertRaises(b.StoreError): b.validate_target({'source':source,'id':'x; touch /tmp/x'})
+            with self.assertRaises(b.AppCenterError): b.validate_target({'source':source,'id':'x; touch /tmp/x'})
     def test_flatpak_scopes_and_exact_refs_are_preserved(self):
         def run(args, **kw):
             if 'search' in args: return 'org.example.App\tExample\tDescription\t1.2\tstable\tflathub\n'
@@ -112,7 +112,7 @@ class BackendTests(unittest.TestCase):
         execute.assert_called_once_with(['flatpak','--system','install','--assumeyes','--noninteractive','--','flathub','app/org.example.App/x86_64/stable'])
         self.assertTrue(all('--show-permissions' not in cmd for cmd in calls))
     def test_flatpak_runtime_metadata_is_not_an_application(self):
-        with self.assertRaisesRegex(b.StoreError,'runtime or extension'):
+        with self.assertRaisesRegex(b.AppCenterError,'runtime or extension'):
             b.flatpak_permissions('[Runtime]\nname=org.example.Extension\n')
     def test_flatpak_addon_search_results_are_filtered(self):
         def run(args, **kw):
@@ -134,7 +134,7 @@ class BackendTests(unittest.TestCase):
         items[0]['catalog_url']='file:///etc/passwd'
         self.assertTrue(b.appimage_catalog_link(items[0]).startswith('https://appimage.github.io/'))
         items[0]['id']='invalid'
-        with self.assertRaises(b.StoreError):b.appimage_catalog_link(items[0])
+        with self.assertRaises(b.AppCenterError):b.appimage_catalog_link(items[0])
     def test_appimage_catalog_is_cached_without_refetch(self):
         payload=json.dumps({'items':[{'name':'Example'}]}).encode()
         with patch.dict(os.environ,{'XDG_CACHE_HOME':str(self.root/'cache')}):
@@ -150,11 +150,11 @@ class BackendTests(unittest.TestCase):
         with patch.object(b,'PackageKit',FakePK):
             _,method,_,args=b.pk_args({'source':'deb','id':'fixture','package_id':pid},'update',6)
             self.assertEqual(method,'UpdatePackages');self.assertEqual(args[1],[pid])
-            with self.assertRaises(b.StoreError):
+            with self.assertRaises(b.AppCenterError):
                 b.pk_args({'source':'deb','id':'fixture','package_id':'fixture;1.0;amd64;debian'},'update',6)
     def test_failed_source_does_not_hide_other_sources(self):
         def provider(source, mode, query):
-            if source=='snap':raise b.StoreError('offline')
+            if source=='snap':raise b.AppCenterError('offline')
             return [{'source':source,'id':'x','name':'Example'}]
         with patch.object(b,'inventory_provider',side_effect=provider): result=b.listing({'mode':'installed'})
         self.assertEqual(len(result['items']),3)
@@ -162,13 +162,13 @@ class BackendTests(unittest.TestCase):
     def test_changed_dependency_plan_requires_new_review(self):
         approved={'target':{'source':'deb','id':'test'},'action':'install','fingerprint':'old'}
         with patch.object(b,'plan',return_value={'fingerprint':'new'}):
-            with self.assertRaisesRegex(b.StoreError,'plan changed'): b.apply(approved)
+            with self.assertRaisesRegex(b.AppCenterError,'plan changed'): b.apply(approved)
     def test_protected_dependency_removal_is_refused(self):
         class FakePK:
             def resolve(self,*a,**kw):return 'test;1;amd64;repo'
             def transaction(self,*a):return ([{'info':'remove','id':'libc6;1;amd64;installed','summary':'libc'}],[])
         with patch.object(b,'PackageKit',FakePK),patch.object(b,'dpkg_installed',return_value=[{'id':'libc6:amd64','protected':True}]):
-            with self.assertRaisesRegex(b.StoreError,'protected'): b.plan({'source':'deb','id':'test'},'install')
+            with self.assertRaisesRegex(b.AppCenterError,'protected'): b.plan({'source':'deb','id':'test'},'install')
     def test_classic_snap_is_explicit_in_review_and_request(self):
         calls=[]
         def api(path,body=None):
@@ -182,11 +182,11 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(calls[-1][1]['classic'])
         self.assertEqual(calls[-1][1]['channel'],'stable')
     def test_no_automatic_appimage_updater(self):
-        with self.assertRaisesRegex(b.StoreError,'publisher'):
+        with self.assertRaisesRegex(b.AppCenterError,'publisher'):
             b.plan({'source':'appimage','id':'a'*64},'update')
     def test_transaction_lock_excludes_other_instances(self):
         with b.mutation_lock():
-            with self.assertRaisesRegex(b.StoreError,'Another'):
+            with self.assertRaisesRegex(b.AppCenterError,'Another'):
                 with b.mutation_lock(): pass
 
     def bundled_image(self, *, icon=b'', icon_path='demo.png', dir_icon=None, desktop=None):
@@ -231,7 +231,7 @@ class BackendTests(unittest.TestCase):
     def test_existing_import_gets_metadata_and_launcher_repaired(self):
         archive=self.bundled_image(icon=self.png())
         checked=b.inspect_local(str(archive));b.apply(b.plan(checked,'install'))
-        dest=self.root/'data/cutefish-store/appimages'/checked['id']
+        dest=self.root/'data/cutefish-app-center/appimages'/checked['id']
         old=dict(checked,installed=True,path=str(dest/'application.AppImage'))
         (dest/'metadata.json').write_text(json.dumps(old))
         item=b.appimage_items()[0]

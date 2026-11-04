@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('backend', Path(__file__).parents[1] / 'backend/store_backend.py')
+spec = importlib.util.spec_from_file_location('backend', Path(__file__).parents[1] / 'backend/app_center_backend.py')
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
 
@@ -153,7 +153,7 @@ class SearchTests(unittest.TestCase):
 
     def test_one_failed_search_provider_does_not_hide_ranked_results(self):
         def provider(source, mode, query):
-            if source == 'snap': raise b.StoreError('offline')
+            if source == 'snap': raise b.AppCenterError('offline')
             return [app('Other', description='Firefox can view links'), app('Firefox')]
         with patch.object(b, 'inventory_provider', side_effect=provider):
             result = b.listing({'mode': 'search', 'query': 'firefox'})

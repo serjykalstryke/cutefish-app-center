@@ -1,4 +1,4 @@
-#define main cutefish_store_program_main
+#define main cutefish_app_center_program_main
 #include "../src/main.cpp"
 #undef main
 #include <cassert>
@@ -27,15 +27,15 @@ int main(int argc,char** argv) {
     std::filesystem::create_directories("work/details-fixture");
     if(!live){
         std::string backend=(std::filesystem::path(__FILE__).parent_path()/"details_fixture.py").string();
-        setenv("CUTEFISH_STORE_BACKEND",backend.c_str(),1);
-        auto temp=std::filesystem::absolute("work/details-fixture").string();setenv("STORE_DETAILS_FIXTURE_DIR",temp.c_str(),1);
+        setenv("CUTEFISH_APP_CENTER_BACKEND",backend.c_str(),1);
+        auto temp=std::filesystem::absolute("work/details-fixture").string();setenv("APP_CENTER_DETAILS_FIXTURE_DIR",temp.c_str(),1);
         std::filesystem::remove("work/details-fixture/launch.json");
     }
     ui::Application app(argc,argv,ui::Application::Platform::Headless);
-    Store store(app,false);store.show();auto& window=store.window();window.grab();
+    AppCenter store(app,false);store.show();auto& window=store.window();window.grab();
     assert(app.mainMenu());assert(app.mainMenu()->submenu(0)->role()==ui::MenuRole::Application);
     assert(app.mainMenu()->submenu(1));assert(app.mainMenu()->submenu(2));
-    assert(!findLabel(window.contentView(),"Cutefish Store"));
+    assert(!findLabel(window.contentView(),"Cutefish App Center"));
     auto* header=findView<ui::WindowHeader>(window.contentView(),[](auto*){return true;});
     assert(header);assert(header->mapToWindow({0,0}).y==0);assert(header->geometry().width==192);
     auto* search=findView<ui::SearchField>(window.contentView(),[](auto*){return true;});

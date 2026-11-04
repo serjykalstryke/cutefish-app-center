@@ -6,7 +6,7 @@ import subprocess
 import unittest
 
 os.environ['DBUS_SYSTEM_BUS_ADDRESS']=os.environ['DBUS_SESSION_BUS_ADDRESS']
-spec=importlib.util.spec_from_file_location('backend',Path(__file__).parents[1]/'backend/store_backend.py')
+spec=importlib.util.spec_from_file_location('backend',Path(__file__).parents[1]/'backend/app_center_backend.py')
 b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
 class ProtocolTest(unittest.TestCase):
  @classmethod
@@ -24,6 +24,6 @@ class ProtocolTest(unittest.TestCase):
   changes,_=pk.transaction('RemovePackages','(tasbb)',(6,['fixture;1.0;amd64;fixture'],True,False))
   self.assertEqual(changes[0]['info'],'remove')
  def test_errors_reach_the_caller(self):
-  with self.assertRaisesRegex(b.StoreError,'Fixture error'):b.PackageKit().transaction('GetUpdates','(t)',(0,))
+  with self.assertRaisesRegex(b.AppCenterError,'Fixture error'):b.PackageKit().transaction('GetUpdates','(t)',(0,))
 
 if __name__=='__main__':unittest.main()

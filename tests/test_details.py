@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('backend', Path(__file__).parents[1] / 'backend/store_backend.py')
+spec = importlib.util.spec_from_file_location('backend', Path(__file__).parents[1] / 'backend/app_center_backend.py')
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aBZkAAAAASUVORK5CYII=')
@@ -97,7 +97,7 @@ class DetailsTests(unittest.TestCase):
     def test_debian_open_rechecks_installation_and_uses_only_package_owned_launcher(self):
         target = dict(source='deb', id='demo', installed=True, can_open=True, launch_command='/untrusted')
         with patch.object(b, 'deb_installed', return_value=''), patch.object(b, 'launch_desktop') as launch:
-            with self.assertRaises(b.StoreError):b.launch_installed(target)
+            with self.assertRaises(b.AppCenterError):b.launch_installed(target)
             launch.assert_not_called()
         with patch.object(b, 'deb_installed', return_value='1'), patch.object(b, 'run', return_value='/etc/data\n/usr/share/applications/demo.desktop\n/tmp/evil.desktop\n'), patch.object(b, 'visible_desktop', return_value=True), patch.object(b, 'launch_desktop') as launch:
             b.launch_installed(target)
@@ -111,7 +111,7 @@ class DetailsTests(unittest.TestCase):
             b.launch_installed(target)
         self.assertEqual(launch.call_args.args[0], ['flatpak', '--system', 'run', '--arch=aarch64', '--branch=beta', 'org.example.App'])
         with patch.object(b, 'run', return_value='org.example.App\tstable\tflathub\taarch64\t1.0\n'), patch.object(b.subprocess, 'Popen') as launch:
-            with self.assertRaises(b.StoreError):b.launch_installed(target)
+            with self.assertRaises(b.AppCenterError):b.launch_installed(target)
             launch.assert_not_called()
     def test_flatpak_details_do_not_download_artwork_supplied_by_the_caller(self):
         target = self.flatpak(icon_url='https://untrusted.example/a.png', screenshot_urls=[dict(url='https://untrusted.example/a.png')])
@@ -127,7 +127,7 @@ class DetailsTests(unittest.TestCase):
     def test_snap_offline_details_keep_installed_information(self):
         installed = dict(name='example', title='Example', version='1', status='active', summary='An app', description='Details', publisher=dict(username='team',validation='verified'))
         def api(path):
-            if path.startswith('/v2/find'):raise b.StoreError('offline')
+            if path.startswith('/v2/find'):raise b.AppCenterError('offline')
             return dict(result=installed)
         with patch.object(b, 'snap_api', side_effect=api), patch.object(b, 'launch_spec', return_value=None):
             result = b.app_details(dict(source='snap',id='example'), artwork=False)
@@ -141,12 +141,12 @@ class DetailsTests(unittest.TestCase):
             item=b.app_details(target)['item']
         self.assertFalse(item['installed']);self.assertFalse(item['can_open']);self.assertEqual(item['catalog_author'],'Packager')
         self.assertEqual(len(item['screenshots']),1)
-        with self.assertRaises(b.StoreError):b.launch_installed(target)
+        with self.assertRaises(b.AppCenterError):b.launch_installed(target)
     def test_managed_appimage_open_does_not_use_original_download_path(self):
         ident='a'*64
-        folder=self.root/'data/cutefish-store/appimages'/ident;folder.mkdir(parents=True)
+        folder=self.root/'data/cutefish-app-center/appimages'/ident;folder.mkdir(parents=True)
         (folder/'application.AppImage').write_bytes(b'fixture')
-        launcher=self.root/'data/applications'/('org.cutefish.Store.AppImage-'+ident+'.desktop');launcher.parent.mkdir()
+        launcher=self.root/'data/applications'/('org.cutefish.AppCenter.AppImage-'+ident+'.desktop');launcher.parent.mkdir()
         launcher.write_text('[Desktop Entry]\nType=Application\nName=Example\nExec=/managed/application.AppImage\n')
         with patch.object(b,'launch_desktop') as launch:
             b.launch_installed(dict(source='appimage',id=ident,path='/untrusted/download.AppImage'))
