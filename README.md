@@ -2,106 +2,184 @@
 
 <img src="data/org.cutefish.Store.svg" alt="Cutefish Store icon" width="96" height="96">
 
-**Early native prototype · Debian 13 · shared development for Cutefish and NordOS.**
+A native software manager for the current Cutefish desktop on Debian 13,
+with Debian, Flatpak, Snap and AppImage providers. Shared development is intended
+for Cutefish and NordOS. This is an independent early prototype.
 
-A native C++/Skia/Wayland application for **the current Cutefish desktop on Debian 13**, with an unprivileged Python provider layer. This targets the current `cutefish-toolkit`, not the older Qt/QML toolkit. It is an independent prototype, not an official Cutefish release.
+## Build from source on Debian 13
 
-The source is maintained at [serjykalstryke/cutefish-store](https://github.com/serjykalstryke/cutefish-store).
-See [contributing](CONTRIBUTING.md), [NordOS branding/integration](docs/NORDOS.md),
-and the [changelog](CHANGELOG.md).
+The repository contains source code. Generated `.deb` packages are deliberately
+excluded from Git; the steps below build your own package.
 
-## Try the packaged build
+### 1. Install the current Cutefish toolkit
 
-A locally packaged `cutefish-store_0.1.1_amd64.deb` is built for the installed Debian 13 Cutefish toolkit revision. From its download directory:
+You need a working current Cutefish session and the native C++20/Skia/Wayland
+`cutefish-toolkit`, including its headers, shared libraries and
+`CutefishToolkitConfig.cmake`. Follow the official
+[Cutefish build guide](https://github.com/cutefishos/getting-started) if those
+are not already installed. The store build does not download or build the
+toolkit itself.
+
+The tested Cutefish Debian package includes the toolkit's development files.
+If CMake cannot find `CutefishToolkit`, check that those files are installed
+and that you are using the current native toolkit.
+
+### 2. Install the store's build and runtime dependencies
 
 ```sh
-sudo apt install ./cutefish-store_0.1.1_amd64.deb
+sudo apt update
+sudo apt install build-essential cmake git python3 python3-gi \
+    packagekit libpackagekit-glib2-18 xdg-utils squashfs-tools util-linux \
+    libfuse2t64 dbus
+```
+
+The Cutefish session supplies the graphical Polkit agent for administrator
+prompts. `squashfs-tools` and `util-linux` read embedded AppImage metadata;
+`libfuse2t64` supports older AppImage runtimes that need `libfuse.so.2`.
+
+Install optional providers if you want to use them:
+
+```sh
+sudo apt install flatpak snapd
+```
+
+The store uses existing APT sources, Flatpak remotes and snapd configuration;
+it does not add repositories automatically. Configure a Flatpak remote such
+as Flathub using its [official setup instructions](https://flathub.org/setup).
+
+### 3. Clone and compile
+
+```sh
+git clone https://github.com/serjykalstryke/cutefish-store.git
+cd cutefish-store
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build build --parallel 2
+```
+
+### 4. Run without installing
+
+Run these commands from the repository directory inside your Cutefish session:
+
+```sh
+CUTEFISH_STORE_BACKEND="$PWD/backend/store_backend.py" \
+CUTEFISH_STORE_BRANDING="$PWD/data/branding.json" \
+./build/cutefish-store
+```
+
+For a visual preview with sample entries and software operations disabled:
+
+```sh
+./build/cutefish-store --preview
+```
+
+The backend/branding overrides are development settings. The normal installed
+app uses its files under `/usr/libexec` and `/usr/share`.
+
+### 5. Build and install a local Debian package
+
+```sh
+python3 scripts/package.py build/cutefish-store \
+    --output cutefish-store_0.1.2_amd64.deb
+sudo apt install ./cutefish-store_0.1.2_amd64.deb
 cutefish-store
 ```
 
-APT installs the declared dependencies, including PackageKit. Installing the store does not install Flatpak apps, Snap apps, or add repositories. Flatpak and snapd are optional recommended providers. Existing remotes and package sources are used.
+The current packaging script targets **Debian 13 amd64** and declares the
+required Cutefish toolkit revision and runtime packages. APT resolves those
+dependencies. Installing through the package also adds the launcher, store
+icon, AppStream metadata and local-file associations.
+
+For development, you can instead install the compiled project directly:
+
+```sh
+sudo cmake --install build
+```
+
+That method does not track installed files with dpkg or install dependencies;
+the prerequisite packages above must already be present. Use the `.deb` for
+normal system installation.
+
+## Using the store
+
+- **Discover:** search configured Debian, Flatpak and Snap sources, plus the
+  community AppImage catalog.
+- **Installed:** inspect and remove installed software. Debian inventory
+  includes system packages, so review dependency changes before confirming.
+- **Updates:** apply individual updates reported by configured providers.
+- **Open file…** or drag a local `.deb`/AppImage onto the window to review it.
 
 ```sh
 cutefish-store ~/Downloads/example.deb
 cutefish-store ~/Downloads/Example.AppImage
-cutefish-store --preview
 ```
 
-`--preview` uses clearly labeled sample entries and disables software operations. Normal mode uses real sources. Select **Open file…**, drop a local file on the window, or use the file manager's **Open With** action. No default file associations are overwritten.
+Matching Debian AppStream and Flatpak IDs share a detail page with a source
+selector. Flatpak scope, architecture, branch and remote remain attached to
+each choice. Search excludes Flatpak runtime extensions.
 
-## What is implemented
+AppImage search uses the [AppImageHub feed](https://appimage.github.io/feed.json),
+cached for 24 hours. It opens a download page in your browser; download the
+file, then import it in the store. Catalog presence does not verify a publisher
+or guarantee a compatible download.
 
-| Source | Search | Installed inventory | Install/remove | Updates |
-| --- | --- | --- | --- | --- |
-| Debian | APT cache; AppStream XML names/icons when present | dpkg, including system packages | PackageKit with dependency simulation and a confirmation view | PackageKit; individual updates |
-| Flatpak | Application refs from configured remotes; extensions excluded | Separate user and default system installations | Exact app/architecture/branch and remote, with scope preserved | Individual apps; dependencies handled by Flatpak |
-| Snap | snapd store API | snapd | snapd API with desktop authorization | Individual refreshes; snapd also owns automatic refresh |
-| AppImage | AppImageHub catalog plus imported library | Store-managed library | Import/copy and menu integration; remove managed copy | Download and import new versions manually |
+AppImage import copies the file into a managed personal library and adds a
+menu entry. Supported type-2 images supply their embedded name, description,
+PNG/SVG artwork and window-matching metadata. Older imports refresh their
+metadata when the store reads the library. Importing reads the archive without
+executing the AppImage. If metadata is unavailable, a generic icon is used.
+Removal preserves the original download and application data.
 
-Matching Debian AppStream IDs and Flatpak IDs share a detail page with a source selector. Entries without a shared identity stay separate; matching similar names is not sufficient to establish that two apps are the same.
+## Tests
 
-AppImage discovery uses the [AppImageHub JSON feed](https://appimage.github.io/feed.json), cached for 24 hours. Catalog entries open a download page in your browser. Download the file there, then open it in the store to review and import it. Catalog presence does not verify a publisher or guarantee a current compatible download. Imported-file management works without the catalog.
-
-**Refresh Debian catalog** downloads repository metadata through PackageKit. **Refresh Flatpak catalog** updates AppStream metadata for configured user/default system remotes. Snap queries its service directly. Provider failures appear separately so the remaining inventory stays available.
-
-## Local packages and transaction behavior
-
-- Debian repository operations require trusted packages. Local `.deb` files are inspected with `dpkg-deb`, hashed, simulated and explicitly reviewed. Local packages may run administrator installation scripts. PackageKit resolves dependencies and requests authorization through the desktop's Polkit agent.
-- Before applying Debian changes, the dependency plan is computed again. A changed plan requires another review. Essential/protected package removals are rejected. No automatic autoremove or purge is requested.
-- Flatpak permissions are shown before installation. Runtime/extension transactions remain Flatpak's responsibility. Removing an app retains its data.
-- Classic Snap confinement is called out in the review; developer-mode installation is rejected. Stable is used for new installs. Removing a snap uses snapd's normal snapshot behavior.
-- AppImage imports check ELF/AppImage magic, copy and verify the file, make the managed copy executable, and create an escaped desktop entry. **Import does not execute the AppImage.** Header checks do not establish publisher trust. Removing the managed copy preserves the original download and app data.
-- One mutation runs at a time across store instances. Closing the window is blocked while it is applying changes. Package-manager services own their own locks and authorization; the UI never runs as root.
-
-## Current limits
-
-This is a first version, not a production-ready replacement for a mature software center.
-
-- AppImage catalog discovery opens download pages; it does not download/install directly or update automatically. Existing unmanaged AppImages are not scanned automatically.
-- No ratings/screenshots, repository editor, Flatpak permission editor, Snap channel selector, update-all, restart scheduling, transaction history or app launching from the store.
-- Debian fallback search includes packages/libraries. AppStream XML is supported; Debian YAML catalogs are not yet read. A rich app-only catalog is a next step.
-- Only the default system Flatpak installation and the user's installation are supported; named system installations are not included.
-- Flatpak and Snap reviews show the app and access notes, not a complete dependency/download-size simulation. Upstream services may ask for licensing, keys or media that this version reports as an error instead of resolving interactively.
-- Each provider search is limited to 100 results, and displayed inventory to 300 entries. Installed-software search narrows the full Debian inventory before display.
-- PackageKit simulation and application are separate transactions, so external package managers can change the system between them. The service's own transaction checks still apply.
-- The desktop user confirmed real native Debian and Snap application installs with 0.1.0. The 0.1.1 Flatpak fix has a live metadata/review check and mocked apply regression test; a real end-to-end Flatpak install still needs confirmation. Upgrades, removals and recovery paths need disposable-system validation before wider distribution.
-
-## Build
-
-Install the current Cutefish toolkit development package plus `cmake`, a C++20 compiler and standard build tools. On this system the toolkit headers and CMake configuration ship in `cutefish-toolkit`. Runtime requirements are `python3`, `python3-gi`, `xdg-utils`, `packagekit`, `libpackagekit-glib2-18`, and a desktop Polkit agent. Flatpak and snapd are optional.
-
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
-cmake --build build -j2
-sudo cmake --install build
-```
-
-To run an uninstalled binary, point it to the provider script:
-
-```sh
-CUTEFISH_STORE_BACKEND="$PWD/backend/store_backend.py" ./build/cutefish-store
-```
-
-The backend override is a development feature, not a privilege boundary. The backend itself stays unprivileged. All package mutations are delegated to authenticated system services or the scoped Flatpak command.
-
-## Verification
+From the repository directory:
 
 ```sh
 python3 tests/test_backend.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
-The protocol tests use a private fake PackageKit service and the installed PackageKit client library. They do not touch the real system package service. `tests/native_smoke.cpp` checks native controls, async installed inventory, filtering and navigation using the toolkit's headless input API. Compile it like `src/main.cpp`, then run it with `CUTEFISH_STORE_BACKEND` set. Create a `work/` directory in the current working directory for its screenshot (`work/installed-smoke.png`).
+The protocol tests use a private fake PackageKit service and do not modify the
+system package database. Archive tests use `mksquashfs` and `unsquashfs` from
+`squashfs-tools`. CI runs these checks on Debian 13.
 
-See [validation notes](docs/VALIDATION.md) for the actual checks and limits of this build.
-
-To package a locally built executable:
+Build and run the native headless integration test:
 
 ```sh
-python3 scripts/package.py build/cutefish-store --output cutefish-store_0.1.1_amd64.deb
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr -DSTORE_BUILD_NATIVE_TEST=ON
+cmake --build build --parallel 2
+mkdir -p work
+CUTEFISH_STORE_BACKEND="$PWD/backend/store_backend.py" \
+./build/cutefish-store-native-smoke
 ```
 
-Automated CI runs backend and private D-Bus protocol tests on Debian 13.
-Native toolkit builds and real package transactions are separate validation steps.
+Real install/update/remove testing belongs on a disposable system. See the
+[validation notes](docs/VALIDATION.md) for results and their limits.
 
-License: BSD-3-Clause.
+## Current limits and troubleshooting
+
+This is a first version. AppImage downloads/updates are manual, named system
+Flatpak installations are unsupported, and Debian metadata reads AppStream
+XML rather than YAML. There is no update-all, repository editor, transaction
+history, permission editor, ratings or screenshots yet. Search/display limits
+are described in [architecture notes](docs/ARCHITECTURE.md).
+
+Debian transactions use PackageKit simulation, review, and normal Polkit
+authorization. Essential/protected removals are refused. Flatpak/Snap services
+handle their own runtime dependencies; their review is not a full dependency
+or download-size simulation. Local Debian packages and AppImages should come
+from a publisher you trust.
+
+If an imported AppImage immediately exits, run the downloaded file in a
+terminal to see its error. For `error loading libfuse.so.2`, Debian 13 needs:
+
+```sh
+sudo apt install libfuse2t64
+```
+
+Follow the [AppImage FUSE guidance](https://docs.appimage.org/user-guide/troubleshooting/fuse.html)
+for remaining mount errors. The file manager's executable-file confirmation
+is separate from the app menu entry.
+
+See [contributing](CONTRIBUTING.md), [NordOS branding/integration](docs/NORDOS.md),
+and the [changelog](CHANGELOG.md). License: BSD-3-Clause.
