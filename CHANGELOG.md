@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-11-04
+
+- Read Debian's AppStream/DEP-11 YAML catalogs using libappstream and show cached repository icons before installation, including search, details, Discover and Updates.
+- Include the standard AppStream and APT icon-cache dependencies; document the initial metadata refresh.
+- Keep APT package identity and generic artwork fallback when catalogs or app icons are unavailable.
+
 ## 0.2.0 — 2026-11-04
 
 - Rename the app, repository, binary, package, desktop ID, artwork and data paths to Cutefish App Center.

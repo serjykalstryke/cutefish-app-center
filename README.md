@@ -50,12 +50,16 @@ and that you are using the current native toolkit.
 sudo apt update
 sudo apt install build-essential cmake git python3 python3-gi \
     packagekit libpackagekit-glib2-18 xdg-utils squashfs-tools util-linux \
-    libfuse2t64 dbus
+    libfuse2t64 dbus appstream gir1.2-appstream-1.0 apt-config-icons
+sudo apt update
 ```
 
 The Cutefish session supplies the graphical Polkit agent for administrator
 prompts. `squashfs-tools` and `util-linux` read embedded AppImage metadata;
 `libfuse2t64` supports older AppImage runtimes that need `libfuse.so.2`.
+`appstream`, its Python bindings and `apt-config-icons` provide Debian's
+application catalog and icons before apps are installed. Run `sudo apt update`
+after installing these dependencies to fetch that metadata and icon cache.
 
 Install optional providers if you want to use them:
 
@@ -99,8 +103,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.2.0_amd64.deb
-sudo apt install ./cutefish-app-center_0.2.0_amd64.deb
+    --output cutefish-app-center_0.2.1_amd64.deb
+sudo apt install ./cutefish-app-center_0.2.1_amd64.deb
 cutefish-app-center
 ```
 
@@ -171,8 +175,10 @@ Search results come from your configured sources and are ranked independently
 of the featured selection. Discover presents a small editorial selection of
 common desktop apps only when they are available in configured local Debian
 or Flatpak catalogs. Its carousel does not rotate automatically. Flatpak category search uses its existing local AppStream catalog and
-checks exact available app refs. Debian uses available AppStream XML metadata,
-with APT names and summaries as a fallback on minimal installations. Catalog
+checks exact available app refs. Debian reads its AppStream XML/DEP-11 YAML catalogs through libappstream,
+including the repository icon cache. Icons appear before installation when
+the configured source publishes them; packages without artwork keep a generic
+icon. APT names and summaries remain a fallback on minimal installations. Catalog
 quality and enabled sources affect which apps can be found.
 
 AppImage search uses the [AppImageHub feed](https://appimage.github.io/feed.json),
@@ -196,6 +202,7 @@ python3 tests/test_backend.py -v
 python3 tests/test_search.py -v
 python3 tests/test_details.py -v
 python3 tests/test_discover.py -v
+python3 tests/test_debian_catalog.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
@@ -232,8 +239,8 @@ Real install/update/remove testing belongs on a disposable system. See the
 ## Current limits and troubleshooting
 
 This is a first version. AppImage downloads/updates are manual, named system
-Flatpak installations are unsupported, and Debian metadata reads AppStream
-XML rather than YAML. There is no update-all, repository editor, transaction
+Flatpak installations are unsupported. Debian artwork depends on the catalogs
+and icon caches published by configured repositories. There is no update-all, repository editor, transaction
 history, permission editor, ratings yet. Search/display limits
 are described in [architecture notes](docs/ARCHITECTURE.md).
 
