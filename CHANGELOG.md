@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 — 2026-11-04
+
+- Rename the app, repository, binary, package, desktop ID, artwork and data paths to Cutefish App Center.
+- Add an upgrade path from cutefish-store and migrate validated AppImage imports, artwork paths and generated launchers without touching original downloads.
+- Rework Discover into a manual featured-app carousel and category grid, populated from configured catalogs.
+- Retain the search-and-details split view when selecting featured apps or categories.
+- Add dedicated Install from File and About sidebar pages; About credits David Stinnett.
+- Remove feature-list copy, local-file instructions and catalog refresh controls from Discover; refresh controls remain under Updates and the Software menu.
+- Add coverage for featured availability, all categories, migration, carousel navigation and file-drop review.
+
 ## 0.1.4 — 2026-11-04
 
 - Add on-demand app details with publisher, full descriptions, versions, license and project website where sources provide them.

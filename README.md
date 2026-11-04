@@ -1,10 +1,30 @@
-# Cutefish Store
+# Cutefish App Center
 
-<img src="data/org.cutefish.Store.svg" alt="Cutefish Store icon" width="96" height="96">
+<img src="data/org.cutefish.AppCenter.svg" alt="Cutefish App Center icon" width="96" height="96">
 
 A native software manager for the current Cutefish desktop on Debian 13,
 with Debian, Flatpak, Snap and AppImage providers. Shared development is intended
-for Cutefish and NordOS. This is an independent early prototype.
+for Cutefish and NordOS. Created by David Stinnett. This is an independent community project.
+
+## Upgrading from Cutefish Store
+
+The application is now **Cutefish App Center**, with repository and package name
+`cutefish-app-center`, desktop ID `org.cutefish.AppCenter`, and the command
+`cutefish-app-center`. Installing the new `.deb` replaces the older
+`cutefish-store` package through APT. Close the old app before upgrading.
+
+The first backend request migrates managed AppImage imports from
+`$XDG_DATA_HOME/cutefish-store` to `$XDG_DATA_HOME/cutefish-app-center`, updates
+the generated menu entries and artwork paths, and preserves original downloads.
+The migration can resume after interruption and refuses changed archives or
+an active transaction in the old app. The old name remains only in migration,
+package replacement metadata and historical license notices.
+
+If you already cloned the repository, update its remote:
+
+```sh
+git remote set-url origin https://github.com/serjykalstryke/cutefish-app-center.git
+```
 
 ## Build from source on Debian 13
 
@@ -17,14 +37,14 @@ You need a working current Cutefish session and the native C++20/Skia/Wayland
 `cutefish-toolkit`, including its headers, shared libraries and
 `CutefishToolkitConfig.cmake`. Follow the official
 [Cutefish build guide](https://github.com/cutefishos/getting-started) if those
-are not already installed. The store build does not download or build the
+are not already installed. The App Center build does not download or build the
 toolkit itself.
 
 The tested Cutefish Debian package includes the toolkit's development files.
 If CMake cannot find `CutefishToolkit`, check that those files are installed
 and that you are using the current native toolkit.
 
-### 2. Install the store's build and runtime dependencies
+### 2. Install App Center's build and runtime dependencies
 
 ```sh
 sudo apt update
@@ -43,15 +63,15 @@ Install optional providers if you want to use them:
 sudo apt install flatpak snapd
 ```
 
-The store uses existing APT sources, Flatpak remotes and snapd configuration;
+App Center uses existing APT sources, Flatpak remotes and snapd configuration;
 it does not add repositories automatically. Configure a Flatpak remote such
 as Flathub using its [official setup instructions](https://flathub.org/setup).
 
 ### 3. Clone and compile
 
 ```sh
-git clone https://github.com/serjykalstryke/cutefish-store.git
-cd cutefish-store
+git clone https://github.com/serjykalstryke/cutefish-app-center.git
+cd cutefish-app-center
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build --parallel 2
 ```
@@ -61,15 +81,15 @@ cmake --build build --parallel 2
 Run these commands from the repository directory inside your Cutefish session:
 
 ```sh
-CUTEFISH_STORE_BACKEND="$PWD/backend/store_backend.py" \
-CUTEFISH_STORE_BRANDING="$PWD/data/branding.json" \
-./build/cutefish-store
+CUTEFISH_APP_CENTER_BACKEND="$PWD/backend/app_center_backend.py" \
+CUTEFISH_APP_CENTER_BRANDING="$PWD/data/branding.json" \
+./build/cutefish-app-center
 ```
 
 For a visual preview with sample entries and software operations disabled:
 
 ```sh
-./build/cutefish-store --preview
+./build/cutefish-app-center --preview
 ```
 
 The backend/branding overrides are development settings. The normal installed
@@ -78,15 +98,15 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 ### 5. Build and install a local Debian package
 
 ```sh
-python3 scripts/package.py build/cutefish-store \
-    --output cutefish-store_0.1.4_amd64.deb
-sudo apt install ./cutefish-store_0.1.4_amd64.deb
-cutefish-store
+python3 scripts/package.py build/cutefish-app-center \
+    --output cutefish-app-center_0.2.0_amd64.deb
+sudo apt install ./cutefish-app-center_0.2.0_amd64.deb
+cutefish-app-center
 ```
 
 The current packaging script targets **Debian 13 amd64** and declares the
 required Cutefish toolkit revision and runtime packages. APT resolves those
-dependencies. Installing through the package also adds the launcher, store
+dependencies. Installing through the package also adds the launcher, application
 icon, AppStream metadata and local-file associations.
 
 For development, you can instead install the compiled project directly:
@@ -99,18 +119,23 @@ That method does not track installed files with dpkg or install dependencies;
 the prerequisite packages above must already be present. Use the `.deb` for
 normal system installation.
 
-## Using the store
+## Using App Center
 
-- **Discover:** search configured Debian, Flatpak and Snap sources, plus the
-  community AppImage catalog.
+- **Discover:** browse a featured-app carousel and application categories, or
+  search configured Debian, Flatpak, Snap and AppImage sources. Selecting a card
+  opens the existing search-and-details view so you can compare software sources.
 - **Installed:** inspect and remove installed software. Debian inventory
   includes system packages, so review dependency changes before confirming.
 - **Updates:** apply individual updates reported by configured providers.
-- **Open file…** or drag a local `.deb`/AppImage onto the window to review it.
+- **Install from File:** drag a `.deb` or AppImage onto the page, or choose a
+  file to review before installing. File drops elsewhere in the window also open
+  this page. Ctrl+O opens the native file chooser.
+- **About:** view the app version, David Stinnett’s author credit, license and
+  project links. The application-name menu opens the same page.
 
 ```sh
-cutefish-store ~/Downloads/example.deb
-cutefish-store ~/Downloads/Example.AppImage
+cutefish-app-center ~/Downloads/example.deb
+cutefish-app-center ~/Downloads/Example.AppImage
 ```
 
 Matching Debian AppStream and Flatpak IDs share a detail page with a source
@@ -124,7 +149,7 @@ offline or missing screenshots do not block package reviews. **Project website**
 opens the HTTPS homepage supplied by the software source.
 
 Installed apps with launchers show **Open** beside their management action.
-The store checks the selected installation again before opening it. Debian
+App Center checks the selected installation again before opening it. Debian
 packages without a desktop launcher, Snap services and catalog-only AppImages
 do not show Open. AppImage catalog authors are labeled separately from
 upstream publishers; a verified-publisher label is shown only when Snap
@@ -138,19 +163,21 @@ continues to the top of the window with a square internal edge.
 Search ranks exact app names and identifiers first, followed by app categories,
 names, keywords and summaries. Queries such as **web browsers**, **image editors**,
 **text editors** and **media players** recognize their category and common aliases.
-The Discover shortcuts use these same searches. Broad category searches filter
+The Discover categories use these same searches. Broad category searches filter
 incidental description matches and helper packages; exact package names still
 find libraries and other technical packages.
 
-Results come from your configured sources, without a fixed list of promoted
-apps. Flatpak category search uses its existing local AppStream catalog and
+Search results come from your configured sources and are ranked independently
+of the featured selection. Discover presents a small editorial selection of
+common desktop apps only when they are available in configured local Debian
+or Flatpak catalogs. Its carousel does not rotate automatically. Flatpak category search uses its existing local AppStream catalog and
 checks exact available app refs. Debian uses available AppStream XML metadata,
 with APT names and summaries as a fallback on minimal installations. Catalog
 quality and enabled sources affect which apps can be found.
 
 AppImage search uses the [AppImageHub feed](https://appimage.github.io/feed.json),
 cached for 24 hours. It opens a download page in your browser; download the
-file, then import it in the store. Catalog presence does not verify a publisher
+file, then import it in App Center. Catalog presence does not verify a publisher
 or guarantee a compatible download.
 
 AppImage import copies the file into a managed personal library and adds a
@@ -168,6 +195,7 @@ From the repository directory:
 python3 tests/test_backend.py -v
 python3 tests/test_search.py -v
 python3 tests/test_details.py -v
+python3 tests/test_discover.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
@@ -181,16 +209,19 @@ inventory and catalog; install Snap and configure system Flathub for its
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=/usr -DSTORE_BUILD_NATIVE_TEST=ON
+    -DCMAKE_INSTALL_PREFIX=/usr -DAPP_CENTER_BUILD_NATIVE_TEST=ON
 cmake --build build --parallel 2
 mkdir -p work
-CUTEFISH_STORE_BACKEND="$PWD/backend/store_backend.py" \
-./build/cutefish-store-native-smoke
-./build/cutefish-store-details-smoke
+CUTEFISH_APP_CENTER_BACKEND="$PWD/backend/app_center_backend.py" \
+./build/cutefish-app-center-native-smoke
+./build/cutefish-app-center-details-smoke
+./build/cutefish-app-center-home-smoke
 ```
 
-The details smoke test uses a private provider fixture and never launches an
-application or changes packages. `./build/cutefish-store-details-smoke --live`
+The home smoke test covers carousel navigation, category search, About credit
+and file-drop review using a private provider. `./build/cutefish-app-center-home-smoke --live` renders all three pages with
+the system catalog. The details smoke test uses a private provider fixture and never launches an
+application or changes packages. `./build/cutefish-app-center-details-smoke --live`
 uses the actual Firefox catalog and saves a rendered view to
 `outputs/app-details.png`. Test assertions stay enabled
 in Release builds.
