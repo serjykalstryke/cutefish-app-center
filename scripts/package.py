@@ -8,28 +8,31 @@ import tempfile
 
 parser=argparse.ArgumentParser()
 parser.add_argument('binary',type=Path)
-parser.add_argument('--output',type=Path,default=Path('cutefish-store_0.1.4_amd64.deb'))
+parser.add_argument('--output',type=Path,default=Path('cutefish-app-center_0.2.0_amd64.deb'))
 args=parser.parse_args()
 source=Path(__file__).resolve().parents[1]
-with tempfile.TemporaryDirectory(prefix='cutefish-store-package-') as temp:
+with tempfile.TemporaryDirectory(prefix='cutefish-app-center-package-') as temp:
  root=Path(temp)
  def copy(src,dest,executable=False):
   dst=root/dest;dst.parent.mkdir(parents=True,exist_ok=True)
   shutil.copyfile(src,dst);dst.chmod(0o755 if executable else 0o644)
- copy(args.binary,'usr/bin/cutefish-store',True)
- copy(source/'backend/store_backend.py','usr/libexec/cutefish-store/store_backend.py',True)
- copy(source/'data/org.cutefish.Store.desktop','usr/share/applications/org.cutefish.Store.desktop')
- copy(source/'data/org.cutefish.Store.svg','usr/share/icons/hicolor/scalable/apps/org.cutefish.Store.svg')
- copy(source/'data/org.cutefish.Store.metainfo.xml','usr/share/metainfo/org.cutefish.Store.metainfo.xml')
- copy(source/'data/branding.json','usr/share/cutefish-store/branding.json')
- copy(source/'LICENSE','usr/share/doc/cutefish-store/copyright')
- copy(source/'README.md','usr/share/doc/cutefish-store/README.md')
+ copy(args.binary,'usr/bin/cutefish-app-center',True)
+ copy(source/'backend/app_center_backend.py','usr/libexec/cutefish-app-center/app_center_backend.py',True)
+ copy(source/'data/org.cutefish.AppCenter.desktop','usr/share/applications/org.cutefish.AppCenter.desktop')
+ copy(source/'data/org.cutefish.AppCenter.svg','usr/share/icons/hicolor/scalable/apps/org.cutefish.AppCenter.svg')
+ copy(source/'data/org.cutefish.AppCenter.metainfo.xml','usr/share/metainfo/org.cutefish.AppCenter.metainfo.xml')
+ copy(source/'data/branding.json','usr/share/cutefish-app-center/branding.json')
+ copy(source/'LICENSE','usr/share/doc/cutefish-app-center/copyright')
+ copy(source/'README.md','usr/share/doc/cutefish-app-center/README.md')
  size=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())//1024
  (root/'DEBIAN').mkdir()
- (root/'DEBIAN/control').write_text(f'''Package: cutefish-store
-Version: 0.1.4
+ (root/'DEBIAN/control').write_text(f'''Package: cutefish-app-center
+Version: 0.2.0
 Architecture: amd64
-Maintainer: Cutefish Store contributors
+Maintainer: Cutefish App Center contributors
+Provides: cutefish-store (= 0.2.0)
+Replaces: cutefish-store
+Conflicts: cutefish-store
 Section: admin
 Priority: optional
 Installed-Size: {size}
