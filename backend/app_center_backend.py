@@ -395,10 +395,81 @@ def appstream_components(paths):
     return result
 
 
+def distribution_appstream(pool=None):
+    """Use libappstream's OS catalog and icon cache, including Debian DEP-11.
+
+    Flatpak metadata and installed desktop files are deliberately excluded:
+    Debian records must retain their own repository/package identity.
+    """
+    try:
+        import gi
+        gi.require_version('AppStream', '1.0')
+        from gi.repository import AppStream as As, GLib
+    except (ImportError, ValueError):
+        return {}
+    try:
+        if pool is None:
+            pool = As.Pool()
+            pool.set_locale('C')
+            pool.set_flags(As.PoolFlags.LOAD_OS_CATALOG)
+            pool.load(None)
+        result = {}
+        components = pool.get_components_by_kind(As.ComponentKind.DESKTOP_APP).as_array()
+        for component in sorted(components, key=lambda c: c.get_id() or ''):
+            packages = [name for name in component.get_pkgnames() if PACKAGE.fullmatch(name)]
+            if not packages:
+                continue
+            developer = component.get_developer()
+            launchable = component.get_launchable(As.LaunchableKind.DESKTOP_ID)
+            provided = component.get_provided_for_kind(As.ProvidedKind.MEDIATYPE)
+            item = dict(name=component.get_name() or '', summary=component.get_summary() or '',
+                        description=description_text(component.get_description() or ''),
+                        app_id=component.get_id(), publisher=developer.get_name() if developer else '',
+                        license=component.get_project_license() or '',
+                        homepage=component.get_url(As.UrlKind.HOMEPAGE) or '',
+                        desktop_ids=launchable.get_entries() if launchable else [],
+                        categories=component.get_categories(), keywords=component.get_keywords(),
+                        mediatypes=provided.get_items() if provided else [], desktop_app=True,
+                        icon='application-x-deb', screenshot_urls=[])
+            # A stock theme icon often exists only after the app is installed.
+            # Repository cache files work before installation and offline.
+            icons = sorted(component.get_icons(), key=lambda i: (
+                abs(i.get_width() * i.get_scale() - 128), i.get_name() or ''))
+            for icon in icons:
+                filename = icon.get_filename()
+                if icon.get_kind() in (As.IconKind.CACHED, As.IconKind.LOCAL) and filename and Path(filename).is_file():
+                    item['icon'] = filename
+                    break
+            else:
+                stock = next((i.get_name() for i in icons if i.get_kind() == As.IconKind.STOCK and i.get_name()), '')
+                if stock:
+                    item['icon'] = stock
+            remote = next((i.get_url() for i in icons if i.get_kind() == As.IconKind.REMOTE
+                           and (i.get_url() or '').startswith('https://')), '')
+            if remote and not Path(item['icon']).is_absolute():
+                item['icon_url'] = remote
+            for shot in sorted(component.get_screenshots_all(), key=lambda x: x.get_kind() != As.ScreenshotKind.DEFAULT):
+                images = [i for i in shot.get_images() if (i.get_url() or '').startswith('https://')]
+                if images:
+                    image = min(images, key=lambda i: abs((i.get_width() or 100000) - 752))
+                    item['screenshot_urls'].append(dict(url=image.get_url(), caption=(shot.get_caption() or '')[:500]))
+                if len(item['screenshot_urls']) == 3:
+                    break
+            for package in packages:
+                result.setdefault(package, item)
+        return result
+    except GLib.Error:
+        # Missing or incomplete metadata must not break APT package management.
+        return {}
+
+
 def appstream():
     """Read distribution metadata if present; APT summaries remain a fallback."""
+    metadata = distribution_appstream()
+    if metadata:
+        return metadata
     paths = []
-    for directory in ("/var/lib/swcatalog/xml", "/var/cache/swcatalog/xml", "/var/cache/app-info/xmls"):
+    for directory in ("/var/lib/swcatalog/xml", "/var/cache/swcatalog/xml", "/usr/share/swcatalog/xml", "/var/cache/app-info/xmls"):
         paths += list(Path(directory).glob("*.xml*"))
     return {item["pkgname"]: {k: v for k, v in item.items() if k not in ("pkgname", "flatpak_ref", "version")}
             for item in appstream_components(paths)
@@ -583,7 +654,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.2.0"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.2.1"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -1103,7 +1174,9 @@ def inventory_provider(source, mode, query):
             return deb_search(query)
         if mode == "updates":
             packages, _ = PackageKit().transaction("GetUpdates", "(t)", (0,))
-            return [dict(source="deb", id=x["id"].split(";")[0], package_id=x["id"], name=x["id"].split(";")[0], version=x["id"].split(";")[1], summary=x["summary"], installed=True, scope="system", icon="application-x-deb") for x in packages]
+            metadata = appstream()
+            return [dict(dict(source="deb", id=x["id"].split(";")[0], package_id=x["id"], name=x["id"].split(";")[0], version=x["id"].split(";")[1], summary=x["summary"], installed=True, scope="system", icon="application-x-deb"),
+                         **metadata.get(x["id"].split(";")[0].split(":")[0], {})) for x in packages]
         metadata = appstream()
         return [dict(x, **metadata.get(x["id"].split(":")[0], {})) for x in dpkg_installed()]
     if source == "flatpak":
@@ -1236,7 +1309,7 @@ def cached_artwork(url):
             pass
     if not public_https(url, resolve=True):
         return stale
-    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.2.0'})
+    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.2.1'})
     try:
         with urllib.request.build_opener(ArtworkRedirect()).open(request, timeout=6) as response:
             raw = response.read(6 * 1024 * 1024 + 1)
