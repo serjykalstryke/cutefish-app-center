@@ -116,3 +116,25 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   Krita, Inkscape, Firefox ESR and Blender. Search does not fetch full packages
   or remotely download each result's icon; normal APT refreshes maintain the
   catalog and cache. Repositories without app metadata retain generic icons.
+
+
+## 0.2.2 Snap and AppImage catalog artwork
+
+- Snap and AppImageHub results register source-derived artwork without delaying
+  list responses. The native UI separately requests visible-row icons in
+  batches of at most 12, with four concurrent loads, and cancels older work on
+  search/navigation. Cached artwork is reusable immediately and offline.
+- 96 backend/protocol checks passed, including 15 catalog-icon checks covering
+  deferred requests, exact snapd icon endpoints, cache reuse, missing/bad images,
+  offline fallback, invalid locator requests, provider identity, AppImageHub
+  database paths and validated SVG/embedded PNG artwork.
+- Native delayed-artwork tests passed navigation during a pending request,
+  cancellation, request batch bounds and loading new icons after scrolling.
+  Existing inventory/search, details and home native checks also passed.
+- Live read-only checks resolved artwork for the uninstalled Firefox Snap and
+  AppImage catalog entries for Krita, Inkscape and Obsidian, including compressed
+  SVG files. Native Snap/AppImage searches rendered source icons in result rows.
+  These checks fetched artwork only, not application binaries.
+- Corrected AppImageHub's relative media URLs to its database directory, also
+  used by catalog screenshots. Broken or absent source artwork still uses the
+  generic icon. Imported AppImages retain their separately extracted artwork.

@@ -73,3 +73,23 @@ then moves managed directories and rewrites only generated launchers/artwork
 paths. Original downloads stay in place. A conflicting validated new import
 keeps its newer metadata and retains the legacy copy as a backup. Changed
 archives and unsafe symlinks are refused instead of silently adopted.
+
+
+## Background result artwork
+
+Snap search/inventory and AppImageHub results register provider-derived icon
+locators in a personal cache. Lists only consult existing artwork; they never
+wait for per-icon network requests. A separate native process asks for small
+batches covering the visible rows and a little overscan, then streams individual
+icon completions. Scrolling schedules another batch. A generation check and
+process cancellation discard work from older searches/pages, independently of
+selection details and package operations.
+
+The icons operation accepts bounded opaque cache keys, not URLs or file paths.
+Its source registry validates each locator against its hash. Public HTTPS
+artwork uses the same bounded image validation, redirect policy and atomic
+cache writes as detail images; installed Snap artwork comes from the exact
+snapd Unix-socket icon endpoint. Four downloads run concurrently at most.
+Existing files are reusable immediately and retained after offline refresh
+failures. Missing or malformed icons preserve the generic fallback. Catalog
+artwork does not install, launch or download an application binary.
