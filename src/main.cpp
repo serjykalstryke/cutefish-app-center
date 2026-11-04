@@ -23,8 +23,11 @@
 #include <ui/file_chooser.h>
 #include <ui/file_drop_area.h>
 #include <ui/icon_image.h>
+#include <ui/image_view.h>
 #include <ui/label.h>
 #include <ui/layout.h>
+#include <ui/menu.h>
+#include <ui/event.h>
 #include <ui/painter.h>
 #include <ui/progress_bar.h>
 #include <ui/scroll_view.h>
@@ -43,6 +46,9 @@ using namespace std::chrono_literals;
 #endif
 #ifndef STORE_BRANDING_FILE
 #define STORE_BRANDING_FILE "/usr/share/cutefish-store/branding.json"
+#endif
+#ifndef STORE_VERSION
+#define STORE_VERSION "0.1.4"
 #endif
 
 static J branding() {
@@ -77,12 +83,13 @@ static std::string sourceName(const J& item) {
 }
 class Panel : public ui::Column {
 public:
-    explicit Panel(bool accent=false): m_accent(accent) { setMargins(ui::Margins::all(20)); setSpacing(12); }
+    explicit Panel(bool accent=false,double radius=16): m_accent(accent),m_radius(radius) { setMargins(ui::Margins::all(20)); setSpacing(12); }
 protected:
     void paint(ui::Painter& p) override {
-        p.fillRoundedRect(localRect(),16,m_accent ? ui::Theme::current().highlight.withAlpha(.10) : ui::Theme::current().secondBackground);
+        auto color=m_accent ? ui::Theme::current().highlight.withAlpha(.10) : ui::Theme::current().secondBackground;
+        if(m_radius>0)p.fillRoundedRect(localRect(),m_radius,color);else p.fillRect(localRect(),color);
     }
-private: bool m_accent;
+private: bool m_accent;double m_radius;
 };
 class AppRow : public ui::Button {
 public:
@@ -111,7 +118,8 @@ public:
     Store(ui::Application& app, bool preview): m_app(app), m_preview(preview), m_debounce(&app.loop()) {
         auto brand=branding();
         const auto displayName=brand["display_name"].toString("Cutefish Store");
-        m_window.setTitle(displayName); m_window.setMinimumSize({900,680}); m_window.resize({1120,800});
+        m_displayName=displayName;
+        m_window.setTitle(displayName); m_window.setMinimumSize({1000,700}); m_window.resize({1200,850});
         m_window.setRestoreId("main");
         m_window.onCloseRequested=[this] {
             if(m_mutating) { m_status->setText("Please wait for the software operation to finish before closing the store."); return; }
@@ -122,15 +130,13 @@ public:
         drop->onDropped=[this](const std::vector<std::string>& urls){
             if(!m_busy && !urls.empty()) if(auto p=base::url::toLocalFile(urls.front())) inspect(*p);
         };
-        auto* root=drop->addChild<ui::Column>();
-        auto* header=root->addChild<ui::WindowHeader>(48);
-        header->setButtonsCentered(true); size(header,-1,48,true);
-        auto* h=header->setContent<ui::Row>(); h->setMargins({20,7,16,7}); h->setSpacing(12);
-        auto* title=label(h,displayName,14,600); size(title,-1,-1,true);
-        m_open=h->addChild<ui::Button>("Open file…"); m_open->onClicked=[this]{chooseFile();};
-        auto* body=root->addChild<ui::Row>(); size(body,-1,-1,true,true);
-        auto* sidebar=body->addChild<Panel>(); size(sidebar,192,-1,false,true);
-        sidebar->setMargins({16,24,16,18}); sidebar->setSpacing(12);
+        auto* body=drop->addChild<ui::Row>(); size(body,-1,-1,true,true);
+        auto* sideSurface=body->addChild<Panel>(false,0); size(sideSurface,192,-1,false,true);
+        sideSurface->setMargins(ui::Margins::all(0));
+        auto* windowControls=sideSurface->addChild<ui::WindowHeader>(48);
+        windowControls->setButtonsCentered(true);windowControls->setButtonMargin(14);size(windowControls,-1,48,true);
+        auto* sidebar=sideSurface->addChild<ui::Column>();size(sidebar,-1,-1,true,true);
+        sidebar->setMargins({16,10,16,18});sidebar->setSpacing(12);
         auto* mark=sidebar->addChild<ui::IconImage>(brand["icon"].toString("org.cutefish.Store"),56); size(mark,56,56);
         label(sidebar,"Your software,\nin one place.",17,650,true);
         auto* intro=label(sidebar,brand["tagline"].toString("Made for Cutefish"),11); intro->setColor(ui::ColorId::DisabledText);
@@ -145,7 +151,11 @@ public:
         label(sidebar,"Open or drop a .deb or AppImage to review it.",12,400,true);
         label(sidebar,brand["distribution_label"].toString("Debian 13"),11);
         auto* main=body->addChild<ui::Column>(); size(main,-1,-1,true,true);
-        main->setMargins({26,18,26,18}); main->setSpacing(14);
+        main->setMargins({26,0,26,18}); main->setSpacing(14);
+        auto* header=main->addChild<ui::WindowHeader>(38);size(header,-1,38,true);
+        header->setCloseVisible(false);header->setMinimizeVisible(false);header->setMaximizeVisible(false);
+        auto* tools=header->setContent<ui::Row>();tools->addStretch();
+        m_open=tools->addChild<ui::Button>("Open file…"); m_open->onClicked=[this]{chooseFile();};
         m_title=label(main,"Discover",28,700);
         m_subtitle=label(main,"Find apps across your configured software sources.",13);
         m_subtitle->setColor(ui::ColorId::DisabledText);
@@ -159,7 +169,7 @@ public:
         m_reload=controls->addChild<ui::Button>("Reload"); m_reload->onClicked=[this]{refresh();};
         auto* workspace=main->addChild<ui::Row>(); workspace->setSpacing(18); size(workspace,-1,-1,true,true);
         m_list=workspace->addChild<ui::ScrollView>(); size(m_list,-1,-1,true,true);
-        m_detail=workspace->addChild<ui::ScrollView>(); size(m_detail,338,-1,false,true);
+        m_detail=workspace->addChild<ui::ScrollView>(); size(m_detail,412,-1,false,true);
         m_warnings=label(main,"",11,400,true); m_warnings->setMaximumLineCount(3); m_warnings->setColor(ui::ColorId::DisabledText); m_warnings->setVisible(false);
         auto* footer=main->addChild<ui::Row>(); footer->setSpacing(12); size(footer,-1,28,true);
         m_status=label(footer,"Ready",11); size(m_status,-1,-1,true);
@@ -172,6 +182,7 @@ public:
         m_refresh->onClicked=[this]{request(J::object({{"op","refresh"}}),[this](const J&){refresh();},true);};
         m_debounce.setSingleShot(true); m_debounce.onTimeout=[this]{if(!m_busy)refresh();};
         m_window.setContentView(std::move(drop));
+        setupMenu();
         landing(); detailEmpty();
         if(m_preview) {
             m_mode="search";
@@ -184,6 +195,7 @@ public:
             m_status->setText("Design preview · sample entries · software operations disabled");
         }
     }
+    ~Store(){cancelDetails();m_app.setMainMenu(nullptr);}
     void show(){m_window.show();}
     ui::Window& window(){return m_window;}
     void open(const std::string& path){inspect(path);}
@@ -194,10 +206,12 @@ private:
         for(auto* b:m_nav) b->setEnabled(!value);
         m_search->setEnabled(!value);m_source->setEnabled(!value);m_reload->setEnabled(!value);
         m_open->setEnabled(!value);m_refresh->setEnabled(!value);m_flatpakRefresh->setEnabled(!value);
+        m_list->setEnabled(!value);
         m_detail->setEnabled(!value);
     }
     void request(const J& data, std::function<void(const J&)> done, bool mutating=false) {
         if(m_preview || m_busy) return;
+        cancelDetails();
         m_debounce.stop(); busy(true,mutating);m_status->setText(mutating?"Applying software changes…":"Loading…");
         m_process=std::make_unique<base::Process>(&m_app.loop());
         m_process->setStandardInput(data.serialize()+"\n");
@@ -288,6 +302,7 @@ private:
         label(col,"Download from a publisher you trust, then open the file here to add it to your library.",12,400,true);
     }
     void detailEmpty() {
+        cancelDetails();m_variants.clear();m_selectedVariant=0;
         auto* panel=m_detail->setContent<Panel>();
         label(panel,"Choose your source",20,650,true);
         label(panel,"Search for software or select an installed app to see its version, installation scope, and available actions.",13,400,true);
@@ -336,49 +351,161 @@ private:
         for(size_t n=0;n<m_rows.size();n++)m_rows[n]->selected(n==i);
         m_variants=m_groups[i];details(0);
     }
+    void cancelDetails() {
+        ++m_detailGeneration;
+        if(m_detailProcess){m_detailProcess->onFinished={};m_detailProcess.reset();}
+    }
+    void setupMenu() {
+        m_mainMenu=std::make_unique<ui::Menu>();
+        auto* application=m_mainMenu->addSubmenu(m_displayName);application->setRole(ui::MenuRole::Application);
+        application->addItem("About "+m_displayName,[this]{message("About "+m_displayName,std::string("Version ")+STORE_VERSION+"\n\nA native software manager for Cutefish on Debian.\nDebian · Flatpak · Snap · AppImage\n\nBSD-3-Clause · Cutefish Store contributors");});
+        application->addSeparator();
+        auto quit=[this]{if(m_mutating)message("Software operation","Please wait for the software operation to finish before quitting.");else m_app.quit();};
+        auto q=application->addItem("Quit "+m_displayName,quit);application->setItemKeyEquivalent(q,"q",ui::ControlModifier);
+        m_window.addShortcut(ui::ControlModifier,'q',quit);
+        auto* file=m_mainMenu->addSubmenu("File");
+        auto open=file->addItem("Open File…",[this]{if(!m_busy)chooseFile();});file->setItemKeyEquivalent(open,"o",ui::ControlModifier);
+        m_window.addShortcut(ui::ControlModifier,'o',[this]{if(!m_busy)chooseFile();});
+        auto launch=file->addItem("Open Selected App",[this]{
+            if(!m_busy && m_selectedVariant<m_variants.size() && m_variants[m_selectedVariant]["can_open"].toBool())launchApp(m_variants[m_selectedVariant]);
+        });
+        file->onAboutToShow=[this,file,open,launch]{file->setItemEnabled(open,!m_busy && !m_preview);file->setItemEnabled(launch,!m_busy && !m_preview && m_selectedVariant<m_variants.size() && m_variants[m_selectedVariant]["can_open"].toBool());};
+        auto* view=m_mainMenu->addSubmenu("View");
+        for(auto mode:{"Discover","Installed","Updates"}){
+            std::string name=mode;view->addItem(name,[this,name]{if(m_busy)return;m_mode=name=="Discover"?"search":name=="Installed"?"installed":"updates";m_search->setText("");refresh();});
+        }
+        view->addSeparator();
+        auto search=[this]{if(!m_busy)m_search->setFocus();};
+        auto find=view->addItem("Search",search);view->setItemKeyEquivalent(find,"f",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'f',search);
+        auto reload=view->addItem("Reload",[this]{if(!m_busy)refresh();});view->setItemKeyEquivalent(reload,"r",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'r',[this]{if(!m_busy)refresh();});
+        auto* software=m_mainMenu->addSubmenu("Software");
+        software->addItem("Refresh Debian Catalog",[this]{if(!m_busy)request(J::object({{"op","refresh"}}),[this](const J&){refresh();},true);});
+        software->addItem("Refresh Flatpak Catalog",[this]{if(!m_busy)request(J::object({{"op","refresh_flatpak"}}),[this](const J&){refresh();},true);});
+        auto* help=m_mainMenu->addSubmenu("Help");help->setRole(ui::MenuRole::Help);
+        help->addItem("Build Instructions and Help",[this]{openWebsite("https://github.com/serjykalstryke/cutefish-store#build-from-source-on-debian-13");});
+        m_app.setMainMenu(m_mainMenu.get());
+    }
+    void openWebsite(const std::string& url) {
+        if(url.starts_with("https://") && base::Process::startDetached("/usr/bin/xdg-open",{url})<0)
+            message("Open website","Could not open your web browser.");
+    }
+    void launchApp(const J& item) {
+        request(J::object({{"op","launch"},{"target",item}}),[this](const J& result){m_status->setText(str(result,"message"));});
+    }
     void details(size_t index) {
         if(index>=m_variants.size())return;
+        cancelDetails();m_selectedVariant=index;
+        renderDetails(index);
+        if(m_preview || m_variants[index]["details_loaded"].toBool())return;
+        const auto generation=m_detailGeneration;
+        m_detailProcess=std::make_unique<base::Process>(&m_app.loop());
+        m_detailProcess->setStandardInput(J::object({{"op","details"},{"target",m_variants[index]}}).serialize()+"\n");
+        m_detailProcess->onFinished=[this,index,generation](int,bool){
+            auto output=m_detailProcess->standardOutput();
+            m_app.loop().post([this,index,generation,output]{
+                if(generation!=m_detailGeneration || index>=m_variants.size())return;
+                m_detailProcess.reset();J result;
+                size_t pos=0;while(pos<output.size()){
+                    auto end=output.find('\n',pos);if(end==std::string::npos)end=output.size();
+                    auto value=J::parse(output.substr(pos,end-pos));if(value && str(*value,"event")=="result")result=*value;pos=end+1;
+                }
+                if(result["ok"].toBool()) {
+                    m_variants[index]=result["item"];
+                    if(result["warnings"].size())m_variants[index].insert("details_note",result["warnings"][0]);
+                } else {
+                    m_variants[index].insert("details_loaded",true);
+                    m_variants[index].insert("details_note","Additional details are unavailable. You can still review the software operation.");
+                }
+                renderDetails(index);
+            });
+        };
+        std::string backend=STORE_BACKEND;if(const char* path=std::getenv("CUTEFISH_STORE_BACKEND"))backend=path;
+        if(!m_detailProcess->start("/usr/bin/python3",{backend})){
+            m_detailProcess.reset();m_variants[index].insert("details_loaded",true);m_variants[index].insert("details_note","Additional details could not be loaded.");renderDetails(index);
+        }
+    }
+    void screenshotDialog(const J& shot,const std::string& name) {
+        m_imageViewer=std::make_unique<ui::DialogWindow>(&m_window,name+" — Screenshot",900);
+        auto* content=m_imageViewer->setContent<ui::Column>();content->setMargins(ui::Margins::all(18));content->setSpacing(12);
+        auto* image=content->addChild<ui::ImageView>(str(shot,"path"));image->setFillMode(ui::ImageView::FillMode::PreserveAspectFit);size(image,-1,450,true);
+        if(!str(shot,"caption").empty())label(content,str(shot,"caption"),12,400,true);
+        auto* close=content->addChild<ui::Button>("Close");close->onClicked=[this]{m_imageViewer->close();};
+        m_imageViewer->show();
+    }
+    void gallery(ui::Column* panel,const J& item) {
+        label(panel,"Screenshots",16,650);
+        auto shots=item["screenshots"].toArray();
+        if(shots.empty()){
+            auto* missing=label(panel,str(item,"artwork_note").empty()?"Screenshots are not provided by this source.":str(item,"artwork_note"),12,400,true);
+            missing->setColor(ui::ColorId::DisabledText);return;
+        }
+        auto* image=panel->addChild<ui::ImageView>(str(shots[0],"path"));
+        image->setFillMode(ui::ImageView::FillMode::PreserveAspectFit);image->setCornerRadius(10);size(image,-1,205,true);
+        auto* caption=label(panel,str(shots[0],"caption"),11,400,true);caption->setMaximumLineCount(3);
+        auto* controls=panel->addChild<ui::Row>();controls->setSpacing(8);size(controls,-1,-1,true);
+        auto current=std::make_shared<size_t>(0);
+        auto* previous=controls->addChild<ui::Button>("‹");previous->setToolTip("Previous screenshot");
+        auto* count=label(controls,"1 / "+std::to_string(shots.size()),11);size(count,-1,-1,true);
+        auto* next=controls->addChild<ui::Button>("›");next->setToolTip("Next screenshot");
+        previous->setEnabled(shots.size()>1);next->setEnabled(shots.size()>1);
+        auto update=[image,caption,count,current,shots]{image->setSource(str(shots[*current],"path"));caption->setText(str(shots[*current],"caption"));count->setText(std::to_string(*current+1)+" / "+std::to_string(shots.size()));};
+        previous->onClicked=[current,shots,update]{*current=(*current+shots.size()-1)%shots.size();update();};
+        next->onClicked=[current,shots,update]{*current=(*current+1)%shots.size();update();};
+        auto* enlarge=controls->addChild<ui::Button>("Enlarge…");enlarge->onClicked=[this,current,shots,item]{screenshotDialog(shots[*current],str(item,"name"));};
+    }
+    void renderDetails(size_t index) {
+        if(index>=m_variants.size())return;
         J item=m_variants[index];
-        auto* panel=m_detail->setContent<Panel>();
-        auto* icon=panel->addChild<ui::IconImage>(str(item,"icon"),64);icon->setFallbackName("application-x-executable");size(icon,64,64);
-        label(panel,str(item,"name"),23,700,true);
-        label(panel,str(item,"summary"),13,400,true);
-        label(panel,"SOURCE",10,650);
+        auto* panel=m_detail->setContent<Panel>();panel->setSpacing(14);
+        auto* identity=panel->addChild<ui::Row>();identity->setSpacing(14);size(identity,-1,-1,true);
+        auto* icon=identity->addChild<ui::IconImage>(str(item,"icon"),64);icon->setFallbackName("application-x-executable");size(icon,64,64);
+        auto* title=identity->addChild<ui::Column>();title->setSpacing(5);size(title,-1,-1,true);
+        label(title,str(item,"name"),23,700,true);
+        auto* status=label(title,item["catalog"].toBool()?"AppImage download":item["installed"].toBool()?"Installed":"Available",11,500);status->setColor(ui::ColorId::DisabledText);
+        if(!str(item,"summary").empty())label(panel,str(item,"summary"),13,400,true);
+        if(!str(item,"publisher").empty())label(panel,str(item,"publisher")+(item["publisher_verified"].toBool()?" · Verified Snap publisher":""),12,550,true);
+        label(panel,"Software source",11,650);
         if(m_variants.size()>1) {
-            std::vector<std::string> names;for(auto& v:m_variants)names.push_back(sourceName(v));
-            auto* variants=panel->addChild<ui::ComboBox>(names);size(variants,-1,36,true);
-            variants->setCurrentIndex(int(index));
+            std::vector<std::string> names;for(auto& v:m_variants){auto name=sourceName(v);if(!str(v,"branch").empty())name+=" · "+str(v,"branch");names.push_back(name);}
+            auto* variants=panel->addChild<ui::ComboBox>(names);size(variants,-1,36,true);variants->setCurrentIndex(int(index));
             variants->onActivated=[this](int n){m_app.loop().post([this,n]{details(n);});};
         } else label(panel,sourceName(item),13,550,true);
-        if(!str(item,"version").empty())label(panel,"Version  "+str(item,"version"),12,400,true);
-        if(!str(item,"branch").empty())label(panel,"Branch  "+str(item,"branch"),12);
-        label(panel,"Identifier  "+str(item,"id"),11,400,true);
-        if(!str(item,"path").empty())label(panel,"File  "+str(item,"path"),11,400,true);
         if(item["catalog"].toBool()) {
-            label(panel,"Community catalog listing. Availability and publisher trust vary. Open the download page, download an AppImage, then use Open file to import it.",12,400,true);
-            auto* download=panel->addChild<ui::DialogButton>("Open download page…",true);size(download,-1,38,true);
-            download->setEnabled(!m_preview);
-            download->onClicked=[this,item]{
-                request(J::object({{"op","catalog_link"},{"target",item}}),[this](const J& result){
-                    auto url=str(result,"url");
-                    if(url.starts_with("https://appimage.github.io/")) {
-                        if(base::Process::startDetached("/usr/bin/xdg-open",{url})<0)
-                            message("Download page","Could not open your web browser.");
-                    }
-                });
-            };
-            return;
+            auto* download=panel->addChild<ui::DialogButton>("Open download page…",true);size(download,-1,40,true);download->setEnabled(!m_preview);
+            download->onClicked=[this,item]{request(J::object({{"op","catalog_link"},{"target",item}}),[this](const J& result){openWebsite(str(result,"url"));});};
+            label(panel,"Download an AppImage from its publisher, then open it here to import it.",12,400,true);
+        } else {
+            auto* actions=panel->addChild<ui::Row>();actions->setSpacing(10);size(actions,-1,40,true);
+            if(item["can_open"].toBool()) {
+                auto* open=actions->addChild<ui::DialogButton>("Open",true);size(open,-1,40,true);open->setEnabled(!m_preview);open->onClicked=[this,item]{launchApp(item);};
+            }
+            bool installed=item["installed"].toBool();
+            std::string action=installed?(m_mode=="updates"?"update":"remove"):"install";
+            std::string text=action=="remove"?"Remove":action=="update"?"Update":str(item,"source")=="appimage"?"Import AppImage":"Install";
+            auto* button=actions->addChild<ui::DialogButton>(text,!item["can_open"].toBool());size(button,-1,40,true);
+            button->setDestructive(action=="remove");button->setEnabled(!m_preview && !item["protected"].toBool());button->onClicked=[this,item,action]{prepare(item,action);};
+            if(item["protected"].toBool())label(panel,"Protected system package",12,600,true);
         }
-        bool installed=item["installed"].toBool();
-        std::string action=installed?(m_mode=="updates"?"update":"remove"):"install";
-        std::string text=action=="remove"?"Remove":action=="update"?"Update":str(item,"source")=="appimage"?"Import AppImage":"Install";
-        if(str(item,"source")=="deb" && installed)label(panel,"Debian inventory includes system packages. Review dependency changes carefully.",11,400,true);
-        auto* button=panel->addChild<ui::DialogButton>(text,true);size(button,-1,38,true);
-        button->setDestructive(action=="remove");button->setEnabled(!m_preview && !item["protected"].toBool());
-        button->onClicked=[this,item,action]{prepare(item,action);};
-        if(item["protected"].toBool())label(panel,"Protected system package",12,600,true);
-        if(str(item,"source")=="appimage")label(panel,"Update support varies by publisher. This version manages imported files and menu entries.",11,400,true);
-        if(str(item,"source")=="snap")label(panel,"Snapd also handles automatic updates for installed snaps.",11,400,true);
+        if(!item["details_loaded"].toBool() && !m_preview){label(panel,"Loading app details…",12,400,true);return;}
+        if(!str(item,"details_note").empty())label(panel,str(item,"details_note"),12,400,true);
+        gallery(panel,item);
+        label(panel,"About",16,650);
+        auto description=str(item,"description");if(description.empty())description=str(item,"summary");
+        label(panel,description.empty()?"No additional description is provided by this source.":description,13,400,true);
+        if(!str(item,"homepage").empty()){
+            auto* website=panel->addChild<ui::Button>("Project website ↗");website->setEnabled(!m_preview);website->onClicked=[this,item]{openWebsite(str(item,"homepage"));};
+        }
+        label(panel,"Details",16,650);
+        for(auto field:{"installed_version","version","branch","arch","architecture","license","maintainer","catalog_author","confinement"}){
+            auto value=str(item,field);if(value.empty())continue;
+            std::string name=std::string(field)=="installed_version"?"Installed version":std::string(field)=="version"?"Available version":std::string(field)=="branch"?"Branch":std::string(field)=="license"?"License":std::string(field)=="maintainer"?"Package maintainer":std::string(field)=="catalog_author"?"Catalog author":std::string(field)=="confinement"?"Confinement":"Architecture";
+            if(std::string(field)=="version" && value==str(item,"installed_version"))continue;
+            label(panel,name+"  "+value,12,400,true);
+        }
+        auto* identifier=label(panel,"Identifier  "+str(item,"id"),11,400,true);identifier->setToolTip(str(item,"id"));
+        if(!str(item,"path").empty())label(panel,"File  "+std::filesystem::path(str(item,"path")).filename().string(),11,400,true);
+        if(str(item,"source")=="appimage")label(panel,"AppImage downloads and updates are managed by the publisher.",11,400,true);
+        if(str(item,"source")=="snap")label(panel,"Snapd manages automatic updates for installed snaps.",11,400,true);
     }
     void prepare(const J& item,const std::string& action) {
         request(J::object({{"op","plan"},{"target",item},{"action",action}}),[this](const J& result){
@@ -410,7 +537,10 @@ private:
     }
     ui::Application& m_app;
     bool m_preview=false,m_busy=false,m_mutating=false;
-    std::string m_mode="search",m_buffer;
+    std::string m_mode="search",m_buffer,m_displayName;
+    size_t m_selectedVariant=0;
+    unsigned long m_detailGeneration=0;
+    std::unique_ptr<ui::Menu> m_mainMenu;
     ui::Window m_window;
     ui::Label *m_title,*m_subtitle,*m_status,*m_warnings;
     ui::SearchField* m_search;
@@ -422,11 +552,11 @@ private:
     std::vector<AppRow*> m_rows;
     std::vector<std::vector<J>> m_groups;
     std::vector<J> m_variants;
-    std::unique_ptr<base::Process> m_process;
+    std::unique_ptr<base::Process> m_process,m_detailProcess;
     base::Timer m_debounce;
     std::unique_ptr<ui::FileChooser> m_chooser;
     std::unique_ptr<ui::ConfirmDialog> m_message;
-    std::unique_ptr<ui::DialogWindow> m_review;
+    std::unique_ptr<ui::DialogWindow> m_review,m_imageViewer;
 };
 
 int main(int argc,char** argv) {
