@@ -13,13 +13,15 @@ import fcntl
 import gzip
 import hashlib
 import http.client
+import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import socket
 import subprocess
+import struct
 import sys
 import tempfile
 import time
@@ -339,7 +341,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishStore/0.1.1"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishStore/0.1.2"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -403,6 +405,11 @@ def appimage_items():
         try:
             item = json.loads(p.read_text())
             if item.get("id") == p.parent.name and re.fullmatch(r"[a-f0-9]{64}", item["id"]):
+                if item.get('metadata_version', 0) < APPIMAGE_METADATA_VERSION:
+                    try:
+                        item = refresh_appimage_metadata(item['id'])
+                    except (StoreError, OSError):
+                        pass
                 result.append(item)
         except (OSError, ValueError, KeyError):
             continue
@@ -571,6 +578,204 @@ def desktop_quote(path):
     return '"' + escaped.replace("\\", "\\\\") + '"'
 
 
+APPIMAGE_METADATA_VERSION = 1
+ICON_MAX_BYTES = 4 * 1024 * 1024
+
+
+def squashfs_offset(path):
+    """Locate a bounded type-2 payload without running its ELF runtime."""
+    size = path.stat().st_size
+    with path.open('rb') as stream:
+        header = stream.read(16 * 1024 * 1024)
+    if header[:4] != b'\x7fELF' or header[8:11] != b'AI\x02':
+        return None
+    start = 0
+    while True:
+        offset = header.find(b'hsqs', start)
+        if offset < 0:
+            return None
+        if offset + 96 <= len(header):
+            block = struct.unpack_from('<I', header, offset + 12)[0]
+            block_log = struct.unpack_from('<H', header, offset + 22)[0]
+            major = struct.unpack_from('<H', header, offset + 28)[0]
+            used = struct.unpack_from('<Q', header, offset + 40)[0]
+            if (major == 4 and 4096 <= block <= 1048576 and
+                    block_log <= 20 and block == 1 << block_log and
+                    96 <= used <= size - offset):
+                return offset
+        start = offset + 4
+
+
+def archive_output(path, offset, options, members=(), limit=65536):
+    """Read bounded metadata through the archive tool, never the AppImage."""
+    if not shutil.which('unsquashfs') or not shutil.which('prlimit'):
+        raise StoreError('Install squashfs-tools and util-linux to read AppImage artwork.')
+    args = ['prlimit', '--fsize=' + str(limit + 1), '--as=536870912', '--cpu=10', '--',
+            'unsquashfs', '-processors', '1', '-data-queue', '8', '-frag-queue', '8',
+            '-no-progress', '-o', str(offset)] + options + [str(path)] + list(members)
+    with tempfile.TemporaryFile() as output:
+        try:
+            result = subprocess.run(args, stdout=output, stderr=subprocess.DEVNULL,
+                                    stdin=subprocess.DEVNULL, env=ENV, timeout=15)
+        except subprocess.TimeoutExpired:
+            raise StoreError('Reading AppImage metadata timed out.') from None
+        if result.returncode:
+            raise StoreError('The embedded metadata could not be read within its limits.')
+        output.seek(0)
+        data = output.read(limit + 1)
+        if len(data) > limit:
+            raise StoreError('The embedded metadata exceeded its size limit.')
+        return data
+
+
+def archive_member(path):
+    value = PurePosixPath(path)
+    return (bool(path) and not value.is_absolute() and '..' not in value.parts and
+            not any(ord(c) < 32 for c in path) and len(path) < 1024)
+
+
+def metadata_text(value, length=512):
+    # Desktop Entry escapes are separate from INI parsing.
+    value = re.sub(r'\\([sntr\\])', lambda m: {'s': ' ', 'n': ' ', 't': ' ', 'r': ' ', '\\': '\\'}[m[1]], value)
+    return ' '.join(re.sub(r'[\x00-\x1f\x7f]', ' ', value).split())[:length]
+
+
+def icon_format(data):
+    if data.startswith(b'\x89PNG\r\n\x1a\n') and len(data) >= 24:
+        width, height = struct.unpack_from('>II', data, 16)
+        return 'png' if 0 < width <= 4096 and 0 < height <= 4096 else None
+    if b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper():
+        return None
+    try:
+        root = ET.fromstring(data)
+        if root.tag.rsplit('}', 1)[-1] != 'svg':
+            return None
+        for node in root.iter():
+            if node.tag.rsplit('}', 1)[-1] in ('script', 'foreignObject'):
+                return None
+            for key, value in node.attrib.items():
+                if key.rsplit('}', 1)[-1] == 'href' and not value.startswith('#'):
+                    return None
+                if 'url(' in value and not re.fullmatch(r'url\(\s*#[\w.-]+\s*\)', value):
+                    return None
+            if node.tag.rsplit('}', 1)[-1] == 'style' and ('url(' in (node.text or '') or '@import' in (node.text or '')):
+                return None
+        return 'svg'
+    except (ET.ParseError, ValueError):
+        return None
+
+
+def embedded_appimage_metadata(path):
+    fields, artwork, suffix = {}, None, None
+    try:
+        offset = squashfs_offset(path)
+        if offset is None:
+            return {'metadata_note': 'Embedded details are unavailable for this AppImage format.'}, None, None
+        listing = archive_output(path, offset, ['-ls', '-max-depth', '1'], limit=128 * 1024).decode('utf-8', 'replace')
+        desktops = sorted(line[len('squashfs-root/'):] for line in listing.splitlines()
+                          if line.startswith('squashfs-root/') and line.endswith('.desktop')
+                          and '/' not in line[len('squashfs-root/'):])[:16]
+        icon_name = ''
+        for desktop in desktops:
+            if not archive_member(desktop):
+                continue
+            try:
+                raw = archive_output(path, offset, ['-cat', '-no-wildcards'], [desktop])
+                parser = configparser.ConfigParser(interpolation=None, strict=False)
+                parser.optionxform = str
+                parser.read_string(raw.decode('utf-8-sig'))
+                entry = parser['Desktop Entry']
+                if entry.get('Type', 'Application') != 'Application' or not entry.get('Name'):
+                    continue
+                fields['name'] = metadata_text(entry['Name'])
+                if entry.get('Comment'):
+                    fields['summary'] = metadata_text(entry['Comment'], 1500)
+                if entry.get('StartupWMClass'):
+                    fields['startup_wm_class'] = metadata_text(entry['StartupWMClass'])
+                fields['categories'] = [x for x in entry.get('Categories', '').split(';') if re.fullmatch(r'[A-Za-z0-9]+', x)][:32]
+                if entry.get('X-AppImage-Version'):
+                    fields['version'] = metadata_text(entry['X-AppImage-Version'])
+                icon_name = entry.get('Icon', '')
+                break
+            except (StoreError, UnicodeError, configparser.Error, KeyError):
+                continue
+        candidates = []
+        if archive_member(icon_name):
+            candidates += [icon_name] if icon_name.endswith(('.png', '.svg', '.svgz')) else [icon_name + ext for ext in ('.png', '.svg', '.svgz')]
+        candidates.append('.DirIcon')
+        for member in dict.fromkeys(candidates):
+            try:
+                data = archive_output(path, offset, ['-cat', '-no-wildcards'], [member], limit=ICON_MAX_BYTES)
+                if data.startswith(b'\x1f\x8b'):
+                    with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
+                        data = compressed.read(ICON_MAX_BYTES + 1)
+                if len(data) <= ICON_MAX_BYTES and (suffix := icon_format(data)):
+                    artwork = data
+                    break
+            except (StoreError, OSError, EOFError):
+                continue
+        if artwork is None:
+            fields['metadata_note'] = 'No supported embedded icon was found; a generic icon is used.'
+    except (StoreError, OSError, ValueError, struct.error):
+        fields['metadata_note'] = 'Embedded details could not be read; a generic icon is used.'
+    return fields, artwork, suffix
+
+
+def desktop_value(value):
+    return re.sub(r'[\x00-\x1f\x7f]', ' ', str(value)).replace('\\', '\\\\')
+
+
+def appimage_launcher(meta):
+    lines = ['[Desktop Entry]', 'Type=Application', 'Name=' + desktop_value(meta['name']),
+             'Exec=' + desktop_quote(meta['path']), 'Icon=' + desktop_value(meta['icon']),
+             'Terminal=false', 'Categories=' + ';'.join(meta.get('categories') or ['Utility']) + ';']
+    if meta.get('summary'):
+        lines.append('Comment=' + desktop_value(meta['summary']))
+    if meta.get('startup_wm_class'):
+        lines.append('StartupWMClass=' + desktop_value(meta['startup_wm_class']))
+    return '\n'.join(lines) + '\n'
+
+
+def atomic_file(path, data, mode=0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(dir=path.parent, prefix='.cutefish-store-')
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write(data if isinstance(data, bytes) else data.encode())
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    finally:
+        Path(temp).unlink(missing_ok=True)
+
+
+def appimage_details(meta, archive, output_dir, final_dir):
+    fields, artwork, suffix = embedded_appimage_metadata(archive)
+    result = dict(meta, **fields, icon='application-x-executable', metadata_version=APPIMAGE_METADATA_VERSION)
+    if artwork is not None:
+        icon_name = 'icon.' + suffix
+        atomic_file(output_dir / icon_name, artwork, 0o644)
+        result['icon'] = str(final_dir / icon_name)
+    return result
+
+
+def refresh_appimage_metadata(ident):
+    if not re.fullmatch(r'[a-f0-9]{64}', ident):
+        raise StoreError('Invalid AppImage identifier.')
+    with mutation_lock():
+        dest = state_dir() / 'appimages' / ident
+        if dest.is_symlink() or not dest.is_dir():
+            raise StoreError('This AppImage is not in the managed library.')
+        archive = dest / 'application.AppImage'
+        if archive.is_symlink() or file_hash(archive) != ident:
+            raise StoreError('The managed AppImage changed. Import the downloaded file again.')
+        old = json.loads((dest / 'metadata.json').read_text())
+        meta = appimage_details(old, archive, dest, dest)
+        launcher = data_home() / 'applications' / ('org.cutefish.Store.AppImage-' + ident + '.desktop')
+        atomic_file(launcher, appimage_launcher(meta), 0o644)
+        atomic_file(dest / 'metadata.json', json.dumps(meta))
+        return meta
+
+
 def import_appimage(target):
     checked = inspect_local(target["path"])
     if checked["id"] != target["id"]:
@@ -589,20 +794,11 @@ def import_appimage(target):
             raise StoreError("The file changed while being copied.")
         (staging / "application.AppImage").chmod(0o755)
         meta = dict(checked, installed=True, path=str(dest / "application.AppImage"))
+        meta = appimage_details(meta, staging / 'application.AppImage', staging, dest)
         (staging / "metadata.json").write_text(json.dumps(meta))
         staging.rename(dest)
         committed = True
-        launcher.parent.mkdir(parents=True, exist_ok=True)
-        name = re.sub(r"[\r\n\x00-\x1f]", " ", checked["name"]).replace("\\", "\\\\")
-        content = "[Desktop Entry]\nType=Application\nName=" + name + "\nExec=" + desktop_quote(dest / "application.AppImage") + "\nIcon=application-x-executable\nTerminal=false\nCategories=Utility;\n"
-        fd, tmp = tempfile.mkstemp(dir=launcher.parent, prefix=".cutefish-store-")
-        try:
-            with os.fdopen(fd, "w") as f:
-                f.write(content)
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, launcher)
-        finally:
-            Path(tmp).unlink(missing_ok=True)
+        atomic_file(launcher, appimage_launcher(meta), 0o644)
     except Exception:
         if committed:
             shutil.rmtree(dest)
@@ -713,6 +909,8 @@ def dispatch(request):
     op = request.get("op")
     if op == "list":
         return listing(request)
+    if op == "refresh_appimage_metadata":
+        return {"item": refresh_appimage_metadata(request["id"]), "message": "AppImage details refreshed."}
     if op == "catalog_link":
         return {"url": appimage_catalog_link(request["target"])}
     if op == "inspect":
