@@ -8,7 +8,7 @@ import tempfile
 
 parser=argparse.ArgumentParser()
 parser.add_argument('binary',type=Path)
-parser.add_argument('--output',type=Path,default=Path('cutefish-store_0.1.1_amd64.deb'))
+parser.add_argument('--output',type=Path,default=Path('cutefish-store_0.1.2_amd64.deb'))
 args=parser.parse_args()
 source=Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='cutefish-store-package-') as temp:
@@ -27,15 +27,15 @@ with tempfile.TemporaryDirectory(prefix='cutefish-store-package-') as temp:
  size=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())//1024
  (root/'DEBIAN').mkdir()
  (root/'DEBIAN/control').write_text(f'''Package: cutefish-store
-Version: 0.1.1
+Version: 0.1.2
 Architecture: amd64
 Maintainer: Cutefish Store contributors
 Section: admin
 Priority: optional
 Installed-Size: {size}
-Depends: libc6 (>= 2.38), libgcc-s1, libstdc++6 (>= 14), cutefish-toolkit (>= 1.0~git20261102154148), python3, python3-gi, xdg-utils, packagekit, libpackagekit-glib2-18
-Recommends: flatpak, snapd
-Suggests: appstream, libfuse2t64
+Depends: libc6 (>= 2.38), libgcc-s1, libstdc++6 (>= 14), cutefish-toolkit (>= 1.0~git20261102154148), python3, python3-gi, xdg-utils, squashfs-tools, util-linux, packagekit, libpackagekit-glib2-18
+Recommends: flatpak, snapd, libfuse2t64
+Suggests: appstream
 Description: Native software manager for the current Cutefish desktop
  Initial prototype for Debian 13. Manages Debian packages through PackageKit,
  Flatpak and Snap apps through their own providers, and imported AppImages.
