@@ -13,12 +13,12 @@ private details from logs. Do not attach credentials.
 
 Before submitting a change:
 
-1. Run `python3 tests/test_backend.py -v`, `python3 tests/test_search.py -v`, `python3 tests/test_details.py -v`, `python3 tests/test_discover.py -v`, and `python3 tests/test_debian_catalog.py -v` (requires `gir1.2-appstream-1.0`).
+1. Run `python3 tests/test_backend.py -v`, `python3 tests/test_search.py -v`, `python3 tests/test_details.py -v`, `python3 tests/test_discover.py -v`, `python3 tests/test_debian_catalog.py -v` (requires `gir1.2-appstream-1.0`), and `python3 tests/test_catalog_icons.py -v`.
 2. If touching Debian transactions, run
    `dbus-run-session -- python3 tests/test_packagekit_protocol.py -v` with
    `python3-gi`, `dbus` and `libpackagekit-glib2-18` installed.
 3. Build native UI changes against the current Cutefish toolkit and check
-   the affected flow. `-DAPP_CENTER_BUILD_NATIVE_TEST=ON` builds the inventory, details and home-page headless smoke tests.
+   the affected flow. `-DAPP_CENTER_BUILD_NATIVE_TEST=ON` builds the inventory, details, home-page and asynchronous-icon headless smoke tests.
 4. Test package mutations on a disposable Debian 13 system. Distinguish mock or
    protocol tests from real install/update/remove results in your pull request.
 

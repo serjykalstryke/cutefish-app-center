@@ -103,8 +103,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.2.1_amd64.deb
-sudo apt install ./cutefish-app-center_0.2.1_amd64.deb
+    --output cutefish-app-center_0.2.2_amd64.deb
+sudo apt install ./cutefish-app-center_0.2.2_amd64.deb
 cutefish-app-center
 ```
 
@@ -181,6 +181,14 @@ the configured source publishes them; packages without artwork keep a generic
 icon. APT names and summaries remain a fallback on minimal installations. Catalog
 quality and enabled sources affect which apps can be found.
 
+Snap and AppImage catalog results load provider artwork in the background as
+rows become visible. Cached icons appear immediately on later searches and
+remain usable offline. Snap uses Store icon metadata for uninstalled apps and
+snapd's local icon endpoint for installed apps when available. AppImageHub
+supplies catalog artwork; imported AppImages keep their embedded icons. Missing
+or invalid artwork keeps the generic icon and never blocks software management.
+Only icons are fetched for browsing; AppImage downloads still open the browser.
+
 AppImage search uses the [AppImageHub feed](https://appimage.github.io/feed.json),
 cached for 24 hours. It opens a download page in your browser; download the
 file, then import it in App Center. Catalog presence does not verify a publisher
@@ -203,6 +211,7 @@ python3 tests/test_search.py -v
 python3 tests/test_details.py -v
 python3 tests/test_discover.py -v
 python3 tests/test_debian_catalog.py -v
+python3 tests/test_catalog_icons.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
@@ -223,8 +232,12 @@ CUTEFISH_APP_CENTER_BACKEND="$PWD/backend/app_center_backend.py" \
 ./build/cutefish-app-center-native-smoke
 ./build/cutefish-app-center-details-smoke
 ./build/cutefish-app-center-home-smoke
+./build/cutefish-app-center-icons-smoke
 ```
 
+The icons smoke test covers delayed artwork, navigation while an icon request
+is pending, small request batches and loading further rows on scroll. Its
+`--snap` and `--appimage` modes render actual read-only catalog searches.
 The home smoke test covers carousel navigation, category search, About credit
 and file-drop review using a private provider. `./build/cutefish-app-center-home-smoke --live` renders all three pages with
 the system catalog. The details smoke test uses a private provider fixture and never launches an

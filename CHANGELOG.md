@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 — 2026-11-04
+
+- Show Snap Store and AppImageHub icons before installation with a separate asynchronous loader for visible result rows.
+- Cache validated artwork, reuse offline copies, and read installed Snap icons through snapd's local endpoint. Imported AppImage artwork remains unchanged.
+- Cancel outdated icon requests on navigation and limit concurrent work; missing artwork does not block search or software operations.
+
 ## 0.2.1 — 2026-11-04
 
 - Read Debian's AppStream/DEP-11 YAML catalogs using libappstream and show cached repository icons before installation, including search, details, Discover and Updates.
