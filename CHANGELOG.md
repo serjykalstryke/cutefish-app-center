@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.4 — 2026-11-04
+
+- Add on-demand app details with publisher, full descriptions, versions, license and project website where sources provide them.
+- Show catalog icons and a cached screenshot gallery with navigation and an enlarged viewer. Preserve usable app details when artwork is offline.
+- Add Open for installed desktop apps, bound to their selected package, Flatpak scope/ref, Snap launcher or managed AppImage launcher.
+- Export the application-name, File, View, Software and Help menus to Cutefish's universal menu, with working keyboard shortcuts.
+- Extend the sidebar to the top of the window and remove its internal corner radius.
+- Add metadata/artwork/launcher regressions and a native details test covering source changes, Open dispatch, gallery, menu registration and sidebar placement.
+
 ## 0.1.3 — 2026-11-04
 
 - Rank search results by relevance before limiting them, with exact app/package names first.

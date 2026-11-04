@@ -79,8 +79,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-store \
-    --output cutefish-store_0.1.3_amd64.deb
-sudo apt install ./cutefish-store_0.1.3_amd64.deb
+    --output cutefish-store_0.1.4_amd64.deb
+sudo apt install ./cutefish-store_0.1.4_amd64.deb
 cutefish-store
 ```
 
@@ -117,6 +117,24 @@ Matching Debian AppStream and Flatpak IDs share a detail page with a source
 selector. Flatpak scope, architecture, branch and remote remain attached to
 each choice. Search excludes Flatpak runtime extensions.
 
+Select an app to load its full description, publisher, versions and license
+where provided. Catalog artwork appears in a screenshot gallery; use the
+arrows to browse and **Enlarge…** for a larger view. Artwork is cached, and
+offline or missing screenshots do not block package reviews. **Project website**
+opens the HTTPS homepage supplied by the software source.
+
+Installed apps with launchers show **Open** beside their management action.
+The store checks the selected installation again before opening it. Debian
+packages without a desktop launcher, Snap services and catalog-only AppImages
+do not show Open. AppImage catalog authors are labeled separately from
+upstream publishers; a verified-publisher label is shown only when Snap
+explicitly reports verification.
+
+Cutefish’s top bar exposes the application-name menu plus **File**, **View**,
+**Software** and **Help**. Open File, Search, Reload and Quit use Ctrl+O, Ctrl+F,
+Ctrl+R and Ctrl+Q (the desktop’s Command key also maps to Ctrl). The sidebar
+continues to the top of the window with a square internal edge.
+
 Search ranks exact app names and identifiers first, followed by app categories,
 names, keywords and summaries. Queries such as **web browsers**, **image editors**,
 **text editors** and **media players** recognize their category and common aliases.
@@ -149,6 +167,7 @@ From the repository directory:
 ```sh
 python3 tests/test_backend.py -v
 python3 tests/test_search.py -v
+python3 tests/test_details.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
@@ -167,7 +186,14 @@ cmake --build build --parallel 2
 mkdir -p work
 CUTEFISH_STORE_BACKEND="$PWD/backend/store_backend.py" \
 ./build/cutefish-store-native-smoke
+./build/cutefish-store-details-smoke
 ```
+
+The details smoke test uses a private provider fixture and never launches an
+application or changes packages. `./build/cutefish-store-details-smoke --live`
+uses the actual Firefox catalog and saves a rendered view to
+`outputs/app-details.png`. Test assertions stay enabled
+in Release builds.
 
 Real install/update/remove testing belongs on a disposable system. See the
 [validation notes](docs/VALIDATION.md) for results and their limits.
@@ -177,7 +203,7 @@ Real install/update/remove testing belongs on a disposable system. See the
 This is a first version. AppImage downloads/updates are manual, named system
 Flatpak installations are unsupported, and Debian metadata reads AppStream
 XML rather than YAML. There is no update-all, repository editor, transaction
-history, permission editor, ratings or screenshots yet. Search/display limits
+history, permission editor, ratings yet. Search/display limits
 are described in [architecture notes](docs/ARCHITECTURE.md).
 
 Debian transactions use PackageKit simulation, review, and normal Polkit
