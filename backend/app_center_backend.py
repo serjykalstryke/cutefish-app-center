@@ -5,6 +5,7 @@ No shell, sudo, root helper or arbitrary executable from a request. Debian
 transactions belong to PackageKit and Snap transactions belong to snapd.
 """
 from __future__ import annotations
+import base64
 import concurrent.futures
 import contextlib
 import configparser
@@ -554,7 +555,8 @@ def snap_items(query=None, updates=False):
     else:
         path = "/v2/snaps"
     data = snap_api(path)["result"]
-    installed = {x["name"] for x in snap_api("/v2/snaps")["result"]} if query is not None or updates else set()
+    installed_records = {x['name']: x for x in (snap_api('/v2/snaps')['result'] if query is not None or updates else data)}
+    installed = set(installed_records)
     items = [dict(source="snap", id=x["name"], name=x.get("title") or x["name"],
                  summary=x.get("summary", ""), version=x.get("version", ""),
                  description=x.get("description", "")[:4000],
@@ -562,7 +564,9 @@ def snap_items(query=None, updates=False):
                  scope="system", channel=x.get("channel", "stable"),
                  confinement=x.get("confinement", "strict"), icon="application-x-executable")
              for x in data if query is None or x.get("type", "app") == "app"]
-    return ranked_search(items, query) if query is not None else items[:LIMIT]
+    items = ranked_search(items, query) if query is not None else items[:LIMIT]
+    records = {x['name']: x for x in data}
+    return [catalog_icon(item, snap_artwork_locator(records[item['id']], installed_records.get(item['id']))) for item in items]
 
 
 def flatpak_items(query=None, updates=False):
@@ -654,7 +658,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.2.1"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.2.2"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -680,7 +684,7 @@ def appimage_feed():
 
 
 def appimage_catalog(query):
-    result = []
+    result, artwork = [], {}
     for entry in appimage_feed():
         if not isinstance(entry, dict):
             continue
@@ -697,7 +701,8 @@ def appimage_catalog(query):
                            categories=[x for x in (entry.get("categories") or []) if isinstance(x, str)],
                            catalog=True, icon="application-x-executable",
                            catalog_url="https://appimage.github.io/" + urllib.parse.quote(name, safe="") + "/"))
-    return ranked_search(result, query)
+        artwork[result[-1]['id']] = appimage_artwork_locator(entry)
+    return [catalog_icon(item, artwork[item['id']]) for item in ranked_search(result, query)]
 
 
 def appimage_catalog_link(target):
@@ -951,6 +956,15 @@ def metadata_text(value, length=512):
     return ' '.join(re.sub(r'[\x00-\x1f\x7f]', ' ', value).split())[:length]
 
 
+def svg_local_references(value):
+    # Gradients/filters in inline CSS can contain several local references.
+    # External resources, imports and escaped CSS URLs are not supported.
+    if '@import' in value.lower() or '\\' in value:
+        return False
+    remaining = re.sub(r"url\(\s*(?:#[\w.-]+|'#[\w.-]+'|\"#[\w.-]+\")\s*\)", '', value, flags=re.I)
+    return re.search(r'url\s*\(', remaining, re.I) is None
+
+
 def icon_format(data):
     if data.startswith(b'\x89PNG\r\n\x1a\n') and len(data) >= 24:
         width, height = struct.unpack_from('>II', data, 16)
@@ -966,10 +980,17 @@ def icon_format(data):
                 return None
             for key, value in node.attrib.items():
                 if key.rsplit('}', 1)[-1] == 'href' and not value.startswith('#'):
+                    if not value.startswith('data:image/png;base64,') or len(value) > 2 * 1024 * 1024:
+                        return None
+                    try:
+                        embedded = base64.b64decode(''.join(value.partition(',')[2].split()), validate=True)
+                        if not embedded.startswith(b'\x89PNG\r\n\x1a\n') or icon_format(embedded) != 'png':
+                            return None
+                    except ValueError:
+                        return None
+                if not svg_local_references(value):
                     return None
-                if 'url(' in value and not re.fullmatch(r'url\(\s*#[\w.-]+\s*\)', value):
-                    return None
-            if node.tag.rsplit('}', 1)[-1] == 'style' and ('url(' in (node.text or '') or '@import' in (node.text or '')):
+            if node.tag.rsplit('}', 1)[-1] == 'style' and not svg_local_references(node.text or ''):
                 return None
         return 'svg'
     except (ET.ParseError, ValueError):
@@ -1291,30 +1312,19 @@ def artwork_format(raw):
     return None
 
 
-def cached_artwork(url):
-    if not public_https(url):
-        return ''
-    directory = cache_home() / 'artwork'
-    key = hashlib.sha256(url.encode()).hexdigest()
-    # Extensions are fixed by validated content, never by a URL filename.
-    stale = ''
+def artwork_cache_entry(key):
+    """Return usable cached artwork without network access, plus freshness."""
     for suffix in ('png', 'jpg', 'webp', 'svg'):
-        path = directory / (key + '.' + suffix)
+        path = cache_home() / 'artwork' / (key + '.' + suffix)
         try:
             if path.is_file() and not path.is_symlink():
-                stale = str(path)
-                if time.time() - path.stat().st_mtime < 7 * 86400:
-                    return str(path)
+                return str(path), time.time() - path.stat().st_mtime < 7 * 86400
         except OSError:
             pass
-    if not public_https(url, resolve=True):
-        return stale
-    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.2.1'})
-    try:
-        with urllib.request.build_opener(ArtworkRedirect()).open(request, timeout=6) as response:
-            raw = response.read(6 * 1024 * 1024 + 1)
-    except (OSError, ValueError, AppCenterError):
-        return stale
+    return '', False
+
+
+def store_artwork(key, raw, stale=''):
     if len(raw) > 6 * 1024 * 1024:
         return stale
     if raw.startswith(b'\x1f\x8b'):
@@ -1328,6 +1338,7 @@ def cached_artwork(url):
     suffix = artwork_format(raw)
     if not suffix:
         return stale
+    directory = cache_home() / 'artwork'
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / (key + '.' + suffix)
     fd, temporary = tempfile.mkstemp(dir=directory, prefix='.artwork-')
@@ -1338,6 +1349,122 @@ def cached_artwork(url):
     finally:
         Path(temporary).unlink(missing_ok=True)
     return str(destination)
+
+
+
+def cached_artwork(url):
+    if not public_https(url):
+        return ''
+    key = hashlib.sha256(url.encode()).hexdigest()
+    stale, fresh = artwork_cache_entry(key)
+    if fresh:
+        return stale
+    if not public_https(url, resolve=True):
+        return stale
+    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.2.2'})
+    try:
+        with urllib.request.build_opener(ArtworkRedirect()).open(request, timeout=6) as response:
+            raw = response.read(6 * 1024 * 1024 + 1)
+        return store_artwork(key, raw, stale)
+    except (OSError, ValueError, AppCenterError):
+        return stale
+
+
+def icon_locator_key(locator):
+    if locator.get('kind') == 'https' and isinstance(locator.get('url'), str) and public_https(locator['url']):
+        return hashlib.sha256(locator['url'].encode()).hexdigest()
+    if (locator.get('kind') == 'snap' and re.fullmatch(r'[a-z0-9][a-z0-9-]{0,99}', locator.get('name', ''))
+            and re.fullmatch(r'[a-zA-Z0-9-]{1,40}', str(locator.get('revision', '')))):
+        return hashlib.sha256(('snap-icon:' + locator['name'] + ':' + str(locator['revision'])).encode()).hexdigest()
+    return ''
+
+
+def catalog_icon(item, locator):
+    """Register only provider-derived locators. A list request never downloads icons."""
+    key = icon_locator_key(locator)
+    if not key:
+        return item
+    cached, _ = artwork_cache_entry(key)
+    if cached:
+        item['icon'] = cached
+    try:
+        registry = cache_home() / 'icon-sources'
+        registry.mkdir(parents=True, exist_ok=True)
+        path = registry / (key + '.json')
+        if not path.is_file():
+            atomic_file(path, json.dumps(locator))
+        item['icon_key'] = key
+    except OSError:
+        pass
+    return item
+
+
+def snap_artwork_locator(record, installed=None):
+    local = installed or record
+    name = local.get('name', '')
+    if local.get('icon') == '/v2/icons/' + name + '/icon':
+        return dict(kind='snap', name=name, revision=str(local.get('revision', '')))
+    urls = [m.get('url') for m in record.get('media') or [] if isinstance(m, dict) and m.get('type') == 'icon']
+    urls.append(record.get('icon'))
+    return next((dict(kind='https', url=url) for url in urls if isinstance(url, str) and public_https(url)), {})
+
+
+def appimage_artwork_locator(entry):
+    icons = entry.get('icons') or []
+    if not isinstance(icons, list):
+        return {}
+    for icon in icons:
+        if isinstance(icon, str):
+            url = urllib.parse.urljoin('https://appimage.github.io/database/', icon)
+            if public_https(url):
+                return dict(kind='https', url=url)
+    return {}
+
+
+def load_catalog_icon(key):
+    if not isinstance(key, str) or not re.fullmatch(r'[a-f0-9]{64}', key):
+        return ''
+    stale, fresh = artwork_cache_entry(key)
+    if fresh:
+        return stale
+    try:
+        path = cache_home() / 'icon-sources' / (key + '.json')
+        if path.is_symlink() or path.stat().st_size > 4096:
+            return stale
+        locator = json.loads(path.read_text())
+        if not isinstance(locator, dict) or icon_locator_key(locator) != key:
+            return stale
+        if locator['kind'] == 'https':
+            return cached_artwork(locator['url'])
+        conn = SnapHTTP('localhost', timeout=6)
+        try:
+            conn.request('GET', '/v2/icons/' + locator['name'] + '/icon')
+            response = conn.getresponse()
+            if response.status != 200:
+                return stale
+            return store_artwork(key, response.read(6 * 1024 * 1024 + 1), stale)
+        finally:
+            conn.close()
+    except (OSError, ValueError, TypeError, AppCenterError, http.client.HTTPException):
+        return stale
+
+
+def list_icons(request):
+    keys = request.get('keys')
+    if (not isinstance(keys, list) or len(keys) > 16 or
+            any(not isinstance(key, str) or not re.fullmatch(r'[a-f0-9]{64}', key) for key in keys)):
+        raise AppCenterError('Invalid icon request.')
+    # Individual completions let a slow source leave the other rows responsive.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        pending = {executor.submit(load_catalog_icon, key): key for key in dict.fromkeys(keys)}
+        for future in concurrent.futures.as_completed(pending):
+            try:
+                path = future.result()
+                if path:
+                    emit(dict(event='icon', key=pending[future], path=path))
+            except (OSError, ValueError, AppCenterError):
+                pass
+    return {}
 
 
 def detail_artwork(item, metadata):
@@ -1467,7 +1594,7 @@ def app_details(target, artwork=True):
     item = dict(target)
     # Display data is re-read from the selected source, never used as launch
     # instructions or as caller-supplied remote artwork URLs.
-    for key in ('screenshots', 'icon_url', 'screenshot_urls', 'can_open', 'homepage', 'publisher', 'license', 'publisher_verified'):
+    for key in ('icon_key', 'screenshots', 'icon_url', 'screenshot_urls', 'can_open', 'homepage', 'publisher', 'license', 'publisher_verified'):
         item.pop(key, None)
     metadata = {}
     source, ident = target['source'], target['id']
@@ -1508,8 +1635,8 @@ def app_details(target, artwork=True):
             warnings.append('Store details are unavailable; showing installed information.')
         publisher = info.get('publisher') or {}
         media = info.get('media') or []
-        metadata = dict(icon_url=next((m['url'] for m in media if m.get('type') == 'icon' and m.get('url')), info.get('icon', '')),
-                        screenshot_urls=[dict(url=m['url'], caption='') for m in media if m.get('type') == 'screenshot' and m.get('url')][:3])
+        catalog_icon(item, snap_artwork_locator(info, installed))
+        metadata = dict(screenshot_urls=[dict(url=m['url'], caption='') for m in media if m.get('type') == 'screenshot' and m.get('url')][:3])
         item.update(name=info.get('title') or info.get('name') or item.get('name', ident), summary=info.get('summary', ''),
                     description=description_text(info.get('description', '')), version=info.get('version', ''),
                     publisher=publisher.get('display-name') or publisher.get('username', ''),
@@ -1521,11 +1648,11 @@ def app_details(target, artwork=True):
                       and hashlib.sha256(e['name'].encode()).hexdigest() == ident), None)
         if entry is None:
             raise AppCenterError('This AppImage catalog entry is no longer available.')
-        base_url = 'https://appimage.github.io/'
+        base_url = 'https://appimage.github.io/database/'
         icons = entry.get('icons') or []
         shots = entry.get('screenshots') or []
-        metadata = dict(icon_url=urllib.parse.urljoin(base_url, icons[0]) if icons and isinstance(icons[0], str) else '',
-                        screenshot_urls=[dict(url=urllib.parse.urljoin(base_url, u), caption='') for u in shots if isinstance(u, str)][:3])
+        catalog_icon(item, appimage_artwork_locator(entry))
+        metadata = dict(screenshot_urls=[dict(url=urllib.parse.urljoin(base_url, u), caption='') for u in shots if isinstance(u, str)][:3])
         authors = [a.get('name', '') for a in entry.get('authors') or [] if isinstance(a, dict)]
         item.update(name=entry['name'], description=description_text(entry.get('description') or ''),
                     catalog_author=', '.join(a for a in authors if a), installed=False)
@@ -1554,6 +1681,10 @@ def app_details(target, artwork=True):
     if not public_https(item.get('homepage', '')):
         item.pop('homepage', None)
     if artwork:
+        if source == 'snap' or target.get('catalog'):
+            path = load_catalog_icon(item.get('icon_key', ''))
+            if path:
+                item['icon'] = path
         detail_artwork(item, metadata)
     item['details_loaded'] = True
     return {'item': item, 'warnings': warnings}
@@ -1705,6 +1836,8 @@ def migrate_legacy_library():
 def dispatch(request):
     migrate_legacy_library()
     op = request.get("op")
+    if op == "icons":
+        return list_icons(request)
     if op == "details":
         return app_details(request["target"])
     if op == "launch":
