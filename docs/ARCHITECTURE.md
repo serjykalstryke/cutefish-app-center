@@ -7,7 +7,7 @@ The backend has four providers:
 - Debian: `apt-cache` and `dpkg-query` for read-only search/inventory; PackageKit D-Bus transactions for simulations and modifications. PackageKit's installed client library converts enum values instead of assuming values from another version. Debian 13's `SetHints(as)` is supported, along with newer dictionary hints.
 - Flatpak: machine-readable columns from the supported Flatpak CLI, explicit `--user`/`--system`, exact refs and remote names. No named installations yet.
 - Snap: HTTP over the snapd Unix socket, `X-Allow-Interaction: true`, asynchronous change polling and explicit error handling.
-- AppImage: AppImageHub feed discovery with a 24-hour cache and a browser handoff; a content-addressed personal library under `$XDG_DATA_HOME/cutefish-store/appimages/<sha256>`, with atomic metadata/desktop-entry writes and no automatic execution or extraction.
+- AppImage: AppImageHub feed discovery with a 24-hour cache and a browser handoff; a content-addressed personal library under `$XDG_DATA_HOME/cutefish-store/appimages/<sha256>`, with atomic metadata/desktop-entry writes. A bounded `unsquashfs` reader extracts only embedded metadata/icon bytes; the AppImage runtime and application are never executed during import. Existing metadata is migrated once when the library is read.
 
 Source entries only merge when a shared AppStream identity is known. The package source, scope and ref remain attached to each variant throughout the UI.
 
@@ -28,3 +28,6 @@ Plans bind targets, operations, changes and permission notes with a fingerprint.
 - [Flatpak command reference](https://docs.flatpak.org/en/latest/flatpak-command-reference.html)
 - [snapd REST API](https://snapcraft.io/docs/snapd-api)
 - [AppImage updates](https://docs.appimage.org/packaging-guide/optional/updates.html)
+
+
+AppImage metadata reads use the system's `unsquashfs` under `prlimit`, with output, memory, CPU and wall-time limits. Only display metadata is copied from the embedded desktop file; its Exec, actions, D-Bus activation and file associations are not imported. The generated launcher always runs the managed AppImage path. Unsupported/malformed icons fall back to the generic icon. Type-1 metadata and runtimes whose SquashFS payload starts beyond the first 16 MiB currently use that fallback.

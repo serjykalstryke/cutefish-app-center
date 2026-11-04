@@ -40,3 +40,13 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   visual style. Artwork was created for this project, not copied from the theme.
 - A real Flatpak install and browser download/import flow still need desktop
   confirmation. No live software changes were made by the development checks.
+
+## 0.1.2 follow-up
+
+- The user confirmed AppImage import and software-menu launch after installing `libfuse2t64`.
+- Reproduced the imported-icon issue: the generated launcher used a generic icon.
+- Read the Firefox Nightly AppImage's embedded `firefox-nightly.desktop` and 12,392-byte PNG through `unsquashfs`, without executing the image.
+- Preserve Name=Firefox Nightly, Comment=Browse the Web, categories and StartupWMClass=Nightly. The source Exec=/opt/firefox-nightly/firefox is deliberately not copied; the launcher retains the managed AppImage path.
+- Added real SquashFS fixtures covering artwork import, internal/external symlinks, existing-import repair, oversized artwork, external SVG resources and missing tooling.
+- 27 backend tests and 2 private PackageKit protocol tests passed. The protocol tests were run in the Cutefish terminal. A fresh out-of-tree Release build with GCC 14.2.0 and the native headless integration test also passed.
+- README now starts with complete source-build instructions and local `.deb` creation; generated packages remain excluded from Git.
