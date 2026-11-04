@@ -279,9 +279,9 @@ private:
         label(hero,"A home for your apps",23,700,true);
         label(hero,"Debian, Flatpak, Snap, and AppImage.\nChoose the source that works for you.",14,400,true);
         label(col,"Start exploring",17,650);
-        for(auto term:{"Web browsers","Creativity","Media players","Development"}){
+        for(auto term:{"Web browsers","Image editors","Media players","Development"}){
             auto* b=col->addChild<ui::Button>(term);size(b,-1,44,true);
-            std::string query=std::string(term)=="Web browsers"?"firefox":std::string(term)=="Creativity"?"gimp":std::string(term)=="Media players"?"vlc":"editor";
+            std::string query=term;
             b->onClicked=[this,query]{m_search->setText(query);refresh();};
         }
         label(col,"AppImages",16,650);
@@ -326,7 +326,7 @@ private:
         std::string warnings;
         for(const auto& w:result["warnings"].toArray()){if(!warnings.empty())warnings+="\n";warnings+=w.toString();}
         m_warnings->setVisible(!warnings.empty());m_warnings->setText(warnings);m_warnings->setToolTip(warnings);
-        auto count=std::to_string(m_groups.size())+" entries";
+        auto count=std::to_string(m_groups.size())+(m_mode=="search"?" results · best matches first":" entries");
         if(!warnings.empty())count+=" · some sources unavailable";
         if(!str(result,"message").empty())count+=" · "+str(result,"message");
         m_status->setText(count);
