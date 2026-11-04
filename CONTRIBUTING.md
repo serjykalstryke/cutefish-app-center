@@ -13,7 +13,7 @@ private details from logs. Do not attach credentials.
 
 Before submitting a change:
 
-1. Run `python3 tests/test_backend.py -v`.
+1. Run `python3 tests/test_backend.py -v` and `python3 tests/test_search.py -v`.
 2. If touching Debian transactions, run
    `dbus-run-session -- python3 tests/test_packagekit_protocol.py -v` with
    `python3-gi`, `dbus` and `libpackagekit-glib2-18` installed.

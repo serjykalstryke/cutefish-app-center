@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3 — 2026-11-04
+
+- Rank search results by relevance before limiting them, with exact app/package names first.
+- Recognize browser, editor and player category queries and aliases using provider metadata.
+- Search cached Flatpak AppStream categories/keywords, including legacy desktop components, while retaining exact remote, scope, branch and architecture.
+- Search Debian summaries as well as names, with optional AppStream XML enrichment.
+- Filter incidental description matches and helper packages from category searches; prefer stable desktop apps over launchers and experimental builds.
+- Make Discover shortcuts perform real category searches and show that results are ranked.
+- Add search regression coverage and extend the native UI smoke test to verify browser discovery.
+
 ## 0.1.2 — 2026-11-04
 
 - Read type-2 AppImage desktop metadata and PNG/SVG artwork without executing the image.

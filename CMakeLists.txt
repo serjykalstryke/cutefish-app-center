@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(cutefish-store VERSION 0.1.2 LANGUAGES CXX)
+project(cutefish-store VERSION 0.1.3 LANGUAGES CXX)
 include(GNUInstallDirs)
 find_package(CutefishToolkit REQUIRED)
 add_executable(cutefish-store src/main.cpp)

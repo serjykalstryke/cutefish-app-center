@@ -79,8 +79,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-store \
-    --output cutefish-store_0.1.2_amd64.deb
-sudo apt install ./cutefish-store_0.1.2_amd64.deb
+    --output cutefish-store_0.1.3_amd64.deb
+sudo apt install ./cutefish-store_0.1.3_amd64.deb
 cutefish-store
 ```
 
@@ -117,6 +117,19 @@ Matching Debian AppStream and Flatpak IDs share a detail page with a source
 selector. Flatpak scope, architecture, branch and remote remain attached to
 each choice. Search excludes Flatpak runtime extensions.
 
+Search ranks exact app names and identifiers first, followed by app categories,
+names, keywords and summaries. Queries such as **web browsers**, **image editors**,
+**text editors** and **media players** recognize their category and common aliases.
+The Discover shortcuts use these same searches. Broad category searches filter
+incidental description matches and helper packages; exact package names still
+find libraries and other technical packages.
+
+Results come from your configured sources, without a fixed list of promoted
+apps. Flatpak category search uses its existing local AppStream catalog and
+checks exact available app refs. Debian uses available AppStream XML metadata,
+with APT names and summaries as a fallback on minimal installations. Catalog
+quality and enabled sources affect which apps can be found.
+
 AppImage search uses the [AppImageHub feed](https://appimage.github.io/feed.json),
 cached for 24 hours. It opens a download page in your browser; download the
 file, then import it in the store. Catalog presence does not verify a publisher
@@ -135,6 +148,7 @@ From the repository directory:
 
 ```sh
 python3 tests/test_backend.py -v
+python3 tests/test_search.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
@@ -142,7 +156,9 @@ The protocol tests use a private fake PackageKit service and do not modify the
 system package database. Archive tests use `mksquashfs` and `unsquashfs` from
 `squashfs-tools`. CI runs these checks on Debian 13.
 
-Build and run the native headless integration test:
+Build and run the native headless integration test. It uses the host's actual
+inventory and catalog; install Snap and configure system Flathub for its
+`snapd` inventory filter and Brave/Chrome/Firefox discovery checks:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
