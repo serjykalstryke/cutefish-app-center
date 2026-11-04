@@ -1,0 +1,30 @@
+# Architecture
+
+`src/main.cpp` builds the native Cutefish views and invokes `backend/store_backend.py` as a separate unprivileged process. Requests are JSON on standard input; responses are newline-delimited progress events followed by a result. No shell is involved. Display strings never become commands.
+
+The backend has four providers:
+
+- Debian: `apt-cache` and `dpkg-query` for read-only search/inventory; PackageKit D-Bus transactions for simulations and modifications. PackageKit's installed client library converts enum values instead of assuming values from another version. Debian 13's `SetHints(as)` is supported, along with newer dictionary hints.
+- Flatpak: machine-readable columns from the supported Flatpak CLI, explicit `--user`/`--system`, exact refs and remote names. No named installations yet.
+- Snap: HTTP over the snapd Unix socket, `X-Allow-Interaction: true`, asynchronous change polling and explicit error handling.
+- AppImage: AppImageHub feed discovery with a 24-hour cache and a browser handoff; a content-addressed personal library under `$XDG_DATA_HOME/cutefish-store/appimages/<sha256>`, with atomic metadata/desktop-entry writes and no automatic execution or extraction.
+
+Source entries only merge when a shared AppStream identity is known. The package source, scope and ref remain attached to each variant throughout the UI.
+
+Plans bind targets, operations, changes and permission notes with a fingerprint. Applying a plan recomputes it and rejects a mismatch. This guards stale UI state; it is not an authorization token. Polkit/package services enforce authorization independently. A per-user advisory lock prevents this store from starting simultaneous modifications. Other package tools can still operate; package-manager locks remain authoritative.
+
+## Next engineering milestones
+
+1. Disposable Debian/Flatpak/Snap transaction tests: install, upgrade, remove, missing dependencies, package lock contention, failed downloads, authentication denial, held packages and restart requirements.
+2. Add AppStream YAML/libappstream support, app-only browsing, reliable cross-source identity mapping and installed-app launching through the Cutefish application registry.
+3. Replace CLI Flatpak transactions with libflatpak for complete dependency/permission previews, structured progress, cancellation and robust EULA handling.
+4. Add persistent transaction records, source settings and AppImage direct-download support with signature/hash verification and publisher update metadata.
+5. Integrate localization, accessibility review, keyboard/focus testing and CI against a pinned toolkit version.
+
+## Reference APIs
+
+- [Cutefish toolkit](https://github.com/cutefishos/cutefish-toolkit)
+- [PackageKit transaction interface](https://www.freedesktop.org/software/PackageKit/doc/dbus-org.freedesktop.packagekit1.Transaction.html)
+- [Flatpak command reference](https://docs.flatpak.org/en/latest/flatpak-command-reference.html)
+- [snapd REST API](https://snapcraft.io/docs/snapd-api)
+- [AppImage updates](https://docs.appimage.org/packaging-guide/optional/updates.html)
