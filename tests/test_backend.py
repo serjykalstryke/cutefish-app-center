@@ -19,6 +19,9 @@ class BackendTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.env = patch.dict(os.environ, {'XDG_DATA_HOME': str(self.root / 'data')})
         self.env.start()
+        metadata = patch.object(b, 'flatpak_appstream', return_value={})
+        metadata.start()
+        self.addCleanup(metadata.stop)
     def tearDown(self):
         self.env.stop()
         self.temp.cleanup()
@@ -77,8 +80,9 @@ class BackendTests(unittest.TestCase):
             self.fail(args)
         with patch.object(b.shutil,'which',return_value='/usr/bin/flatpak'),patch.object(b,'run',side_effect=run):
             items=b.flatpak_items('example')
-        self.assertEqual([x['scope'] for x in items],['user','system'])
-        self.assertFalse(items[0]['installed']); self.assertTrue(items[1]['installed'])
+        by_scope = {x['scope']: x for x in items}
+        self.assertEqual(set(by_scope), {'user', 'system'})
+        self.assertFalse(by_scope['user']['installed']); self.assertTrue(by_scope['system']['installed'])
         with patch.object(b,'run',return_value='x86_64\n'):
             self.assertEqual(b.flatpak_ref(items[0]),'app/org.example.App/x86_64/stable')
     def test_flatpak_other_branch_is_not_marked_installed(self):

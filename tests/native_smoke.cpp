@@ -40,7 +40,15 @@ int main(int argc,char** argv) {
             w.grab().savePng("work/installed-smoke.png");
             click(w,findLabel(w.contentView(),"Discover"));w.grab();
             assert(findLabel(w.contentView(),"A home for your apps"));
-            std::cout<<"Native controls, async inventory, search, and navigation passed.\n";app.quit();
+            click(w,findLabel(w.contentView(),"Web browsers"));stage=2;
+        } else if(stage==2 && containsLabel(w.contentView(),"best matches first")) {
+            assert(findSearch(w.contentView())->text()=="Web browsers");
+            assert(findLabel(w.contentView(),"Brave"));
+            assert(findLabel(w.contentView(),"Google Chrome"));
+            assert(findLabel(w.contentView(),"Firefox"));
+            assert(!findLabel(w.contentView(),"chromium-sandbox"));
+            w.grab().savePng("work/search-smoke.png");
+            std::cout<<"Native controls, async inventory, category search, and navigation passed.\n";app.quit();
         }
     };
     poll.start(100ms);return app.run();
