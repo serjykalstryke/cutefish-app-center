@@ -41,19 +41,19 @@ namespace base = cutefish::base;
 using J = base::json::Value;
 using namespace std::chrono_literals;
 
-#ifndef STORE_BACKEND
-#define STORE_BACKEND "/usr/libexec/cutefish-store/store_backend.py"
+#ifndef APP_CENTER_BACKEND
+#define APP_CENTER_BACKEND "/usr/libexec/cutefish-app-center/app_center_backend.py"
 #endif
-#ifndef STORE_BRANDING_FILE
-#define STORE_BRANDING_FILE "/usr/share/cutefish-store/branding.json"
+#ifndef APP_CENTER_BRANDING_FILE
+#define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
-#ifndef STORE_VERSION
-#define STORE_VERSION "0.1.4"
+#ifndef APP_CENTER_VERSION
+#define APP_CENTER_VERSION "0.2.0"
 #endif
 
 static J branding() {
-    std::string path=STORE_BRANDING_FILE;
-    if(const char* overridePath=std::getenv("CUTEFISH_STORE_BRANDING"))path=overridePath;
+    std::string path=APP_CENTER_BRANDING_FILE;
+    if(const char* overridePath=std::getenv("CUTEFISH_APP_CENTER_BRANDING"))path=overridePath;
     std::ifstream file(path);
     if(!file)return J::object();
     std::string text{std::istreambuf_iterator<char>(file),{}};
@@ -113,12 +113,90 @@ protected:
 private: ui::Row* m_row; bool m_selected=false;
 };
 
-class Store {
+class NavigationItem : public ui::Button {
 public:
-    Store(ui::Application& app, bool preview): m_app(app), m_preview(preview), m_debounce(&app.loop()) {
+    NavigationItem(const std::string& text,const std::string& icon):ui::Button(""){
+        m_content=addChild<ui::Row>();m_content->setSpacing(10);m_content->setMargins({12,9,12,9});
+        auto* glyph=m_content->addChild<ui::IconImage>(icon,20);glyph->setFallbackName("applications-other");size(glyph,20,20);
+        label(m_content,text,13,500);size(this,-1,42,true);
+    }
+    void setSelected(bool selected){m_selected=selected;requestPaint();}
+protected:
+    void layout() override {m_content->setGeometry(localRect());}
+    void paint(ui::Painter& p) override {
+        if(m_selected)p.fillRoundedRect(localRect(),9,ui::Theme::current().highlight.withAlpha(.16));
+        else if(m_hot)p.fillRoundedRect(localRect(),9,ui::Theme::current().text.withAlpha(.05));
+        if(hasVisibleFocus())p.strokeRoundedRect(localRect().adjusted(1,1,-1,-1),9,ui::Theme::current().highlight,1.5);
+    }
+    void pointerEnter() override {ui::Button::pointerEnter();m_hot=true;requestPaint();}
+    void pointerLeave() override {ui::Button::pointerLeave();m_hot=false;requestPaint();}
+private:ui::Row* m_content;bool m_selected=false,m_hot=false;
+};
+class CategoryTile : public ui::Button {
+public:
+    CategoryTile(const std::string& name,const std::string& description,const std::string& icon):ui::Button(""){
+        m_content=addChild<ui::Row>();m_content->setMargins({16,15,16,15});m_content->setSpacing(12);
+        auto* glyph=m_content->addChild<ui::IconImage>(icon,32);glyph->setFallbackName("applications-other");size(glyph,32,32);
+        auto* text=m_content->addChild<ui::Column>();text->setSpacing(4);size(text,-1,-1,true);
+        label(text,name,14,600);auto* descriptionLabel=label(text,description,11,400,true);descriptionLabel->setColor(ui::ColorId::DisabledText);descriptionLabel->setMaximumLineCount(2);
+        size(this,-1,86,true);
+    }
+protected:
+    void layout() override {m_content->setGeometry(localRect());}
+    void paint(ui::Painter& p) override {
+        p.fillRoundedRect(localRect(),12,ui::Theme::current().secondBackground);
+        if(m_hot)p.fillRoundedRect(localRect(),12,ui::Theme::current().highlight.withAlpha(.06));
+        if(hasVisibleFocus())p.strokeRoundedRect(localRect().adjusted(1,1,-1,-1),12,ui::Theme::current().highlight,1.5);
+    }
+    void pointerEnter() override {ui::Button::pointerEnter();m_hot=true;requestPaint();}
+    void pointerLeave() override {ui::Button::pointerLeave();m_hot=false;requestPaint();}
+private:ui::Row* m_content;bool m_hot=false;
+};
+class FeaturedCard : public ui::Button {
+public:
+    explicit FeaturedCard(const J& item):ui::Button(""){
+        m_content=addChild<ui::Column>();m_content->setMargins(ui::Margins::all(18));m_content->setSpacing(12);
+        auto* heading=m_content->addChild<ui::Row>();heading->setSpacing(12);size(heading,-1,48,true);
+        auto* icon=heading->addChild<ui::IconImage>(str(item,"icon"),48);icon->setFallbackName("application-x-executable");size(icon,48,48);
+        auto* name=label(heading,str(item,"feature_name"),17,650,true);name->setMaximumLineCount(2);size(name,-1,-1,true);
+        auto* summary=label(m_content,str(item,"summary"),12,400,true);summary->setMaximumLineCount(2);
+        m_content->addStretch();
+        auto* source=label(m_content,sourceName(item),10);source->setColor(ui::ColorId::DisabledText);
+        auto* action=label(m_content,"View details →",12,600);action->setColor(ui::Theme::current().highlight);
+        setToolTip(str(item,"summary"));size(this,-1,204,true);
+    }
+protected:
+    void layout() override {m_content->setGeometry(localRect());}
+    void paint(ui::Painter& p) override {
+        p.fillRoundedRect(localRect(),14,ui::Theme::current().secondBackground);
+        if(m_hot)p.fillRoundedRect(localRect(),14,ui::Theme::current().highlight.withAlpha(.05));
+        if(m_hot || hasVisibleFocus())p.strokeRoundedRect(localRect().adjusted(1,1,-1,-1),14,ui::Theme::current().highlight.withAlpha(.5),1.5);
+    }
+    void pointerEnter() override {ui::Button::pointerEnter();m_hot=true;requestPaint();}
+    void pointerLeave() override {ui::Button::pointerLeave();m_hot=false;requestPaint();}
+private:ui::Column* m_content;bool m_hot=false;
+};
+class DropPanel : public Panel {
+public:
+    DropPanel():Panel(false,14){}
+    void setActive(bool active){m_active=active;requestPaint();}
+protected:
+    void paint(ui::Painter& p) override {
+        Panel::paint(p);
+        if(m_active)p.fillRoundedRect(localRect(),14,ui::Theme::current().highlight.withAlpha(.08));
+        p.strokeRoundedRect(localRect().adjusted(1,1,-1,-1),14,m_active?ui::Theme::current().highlight:ui::Theme::current().disabledText.withAlpha(.3),m_active?2:1);
+    }
+private:bool m_active=false;
+};
+
+class AppCenter {
+public:
+    AppCenter(ui::Application& app, bool preview): m_app(app), m_preview(preview), m_debounce(&app.loop()) {
         auto brand=branding();
-        const auto displayName=brand["display_name"].toString("Cutefish Store");
+        const auto displayName=brand["display_name"].toString("Cutefish App Center");
         m_displayName=displayName;
+        m_author=brand["author"].toString("David Stinnett");m_brandIcon=brand["icon"].toString("org.cutefish.AppCenter");
+        m_distribution=brand["distribution_label"].toString("Debian 13");m_projectUrl=brand["project_url"].toString("https://github.com/serjykalstryke/cutefish-app-center");
         m_window.setTitle(displayName); m_window.setMinimumSize({1000,700}); m_window.resize({1200,850});
         m_window.setRestoreId("main");
         m_window.onCloseRequested=[this] {
@@ -127,6 +205,7 @@ public:
         };
         auto drop=std::make_unique<ui::FileDropArea>();
         drop->filter=[](const std::string& url){ return base::url::isLocalFile(url); };
+        drop->onContainsDragChanged=[this,area=drop.get()]{if(m_dropZone)m_dropZone->setActive(area->containsDrag());};
         drop->onDropped=[this](const std::vector<std::string>& urls){
             if(!m_busy && !urls.empty()) if(auto p=base::url::toLocalFile(urls.front())) inspect(*p);
         };
@@ -137,44 +216,40 @@ public:
         windowControls->setButtonsCentered(true);windowControls->setButtonMargin(14);size(windowControls,-1,48,true);
         auto* sidebar=sideSurface->addChild<ui::Column>();size(sidebar,-1,-1,true,true);
         sidebar->setMargins({16,10,16,18});sidebar->setSpacing(12);
-        auto* mark=sidebar->addChild<ui::IconImage>(brand["icon"].toString("org.cutefish.Store"),56); size(mark,56,56);
-        label(sidebar,"Your software,\nin one place.",17,650,true);
-        auto* intro=label(sidebar,brand["tagline"].toString("Made for Cutefish"),11); intro->setColor(ui::ColorId::DisabledText);
-        for(auto name:{"Discover","Installed","Updates"}) {
-            auto* b=sidebar->addChild<ui::Button>(name); size(b,-1,38,true);
-            std::string mode=std::string(name)=="Discover"?"search":std::string(name)=="Installed"?"installed":"updates";
-            b->onClicked=[this,mode]{m_mode=mode; m_search->setText(""); refresh();};
-            m_nav.push_back(b);
+        auto* brandRow=sidebar->addChild<ui::Row>();brandRow->setSpacing(10);size(brandRow,-1,54,true);
+        auto* mark=brandRow->addChild<ui::IconImage>(brand["icon"].toString("org.cutefish.AppCenter"),36);size(mark,36,36);
+        label(brandRow,brand["sidebar_name"].toString("App Center"),16,650,true);
+        size(sidebar->addChild<ui::View>(),-1,8);
+        for(const auto& entry:std::vector<std::vector<std::string>>{{"Discover","discover","view-grid"},{"Installed","installed","applications-other"},{"Updates","updates","system-software-update"},{"Install from File","files","document-open"}}){
+            auto* button=sidebar->addChild<NavigationItem>(entry[0],entry[2]);
+            button->onClicked=[this,page=entry[1]]{navigate(page);};m_nav.push_back(button);m_navPages.push_back(entry[1]);
         }
         sidebar->addStretch();
-        label(sidebar,"LOCAL FILES",10,650);
-        label(sidebar,"Open or drop a .deb or AppImage to review it.",12,400,true);
-        label(sidebar,brand["distribution_label"].toString("Debian 13"),11);
+        auto* about=sidebar->addChild<NavigationItem>("About","help-about");about->onClicked=[this]{navigate("about");};m_nav.push_back(about);m_navPages.push_back("about");
         auto* main=body->addChild<ui::Column>(); size(main,-1,-1,true,true);
         main->setMargins({26,0,26,18}); main->setSpacing(14);
         auto* header=main->addChild<ui::WindowHeader>(38);size(header,-1,38,true);
         header->setCloseVisible(false);header->setMinimizeVisible(false);header->setMaximizeVisible(false);
-        auto* tools=header->setContent<ui::Row>();tools->addStretch();
-        m_open=tools->addChild<ui::Button>("Open file…"); m_open->onClicked=[this]{chooseFile();};
+
         m_title=label(main,"Discover",28,700);
         m_subtitle=label(main,"Find apps across your configured software sources.",13);
         m_subtitle->setColor(ui::ColorId::DisabledText);
-        auto* controls=main->addChild<ui::Row>(); controls->setSpacing(12); size(controls,-1,38,true);
-        m_search=controls->addChild<ui::SearchField>("Search apps and packages"); size(m_search,-1,38,true);
-        m_search->onTextEdited=[this]{m_debounce.start(450ms);};
+        auto* controls=main->addChild<ui::Row>();m_controls=controls; controls->setSpacing(12); size(controls,-1,38,true);
+        m_search=controls->addChild<ui::SearchField>("Search apps"); size(m_search,-1,38,true);
+        m_search->onTextEdited=[this]{if(m_page!="installed" && m_page!="updates"){m_page="discover";m_mode="search";}m_debounce.start(450ms);};
         m_search->onAccepted=[this]{m_debounce.stop();refresh();};
         m_source=controls->addChild<ui::ComboBox>(std::vector<std::string>{"All sources","Debian","Flatpak","Snap","AppImage"});
         m_source->setCurrentIndex(0); size(m_source,150,36);
         m_source->onActivated=[this](int){refresh();};
-        m_reload=controls->addChild<ui::Button>("Reload"); m_reload->onClicked=[this]{refresh();};
+        m_reload=controls->addChild<ui::Button>("Reload"); m_reload->onClicked=[this]{reloadView();};
         auto* workspace=main->addChild<ui::Row>(); workspace->setSpacing(18); size(workspace,-1,-1,true,true);
         m_list=workspace->addChild<ui::ScrollView>(); size(m_list,-1,-1,true,true);
         m_detail=workspace->addChild<ui::ScrollView>(); size(m_detail,412,-1,false,true);
         m_warnings=label(main,"",11,400,true); m_warnings->setMaximumLineCount(3); m_warnings->setColor(ui::ColorId::DisabledText); m_warnings->setVisible(false);
-        auto* footer=main->addChild<ui::Row>(); footer->setSpacing(12); size(footer,-1,28,true);
+        auto* footer=main->addChild<ui::Row>();m_footer=footer; footer->setSpacing(12); size(footer,-1,28,true);
         m_status=label(footer,"Ready",11); size(m_status,-1,-1,true);
         m_bar=footer->addChild<ui::ProgressBar>(); size(m_bar,110,6); m_bar->setVisible(false);
-        auto* metadata=main->addChild<ui::Row>();metadata->setSpacing(12);size(metadata,-1,-1,true);
+        auto* metadata=main->addChild<ui::Row>();m_metadataControls=metadata;metadata->setSpacing(12);size(metadata,-1,-1,true);
         m_refresh=metadata->addChild<ui::Button>("Refresh Debian catalog");
         m_flatpakRefresh=metadata->addChild<ui::Button>("Refresh Flatpak catalog");
         m_flatpakRefresh->onClicked=[this]{request(J::object({{"op","refresh_flatpak"}}),[this](const J&){refresh();},true);};
@@ -183,19 +258,16 @@ public:
         m_debounce.setSingleShot(true); m_debounce.onTimeout=[this]{if(!m_busy)refresh();};
         m_window.setContentView(std::move(drop));
         setupMenu();
-        landing(); detailEmpty();
+        navigate("discover");
         if(m_preview) {
-            m_mode="search";
-            J::Array items;
-            items.push_back(J::object({{"source","deb"},{"id","gimp"},{"app_id","org.gimp.GIMP"},{"name","GNU Image Manipulation Program"},{"summary","Create and edit images with a complete set of professional tools."},{"version","3.0"},{"scope","system"},{"icon","gimp"},{"installed",false}}));
-            items.push_back(J::object({{"source","flatpak"},{"id","org.gimp.GIMP"},{"name","GNU Image Manipulation Program"},{"summary","Create and edit images with a complete set of professional tools."},{"version","3.0"},{"remote","flathub"},{"branch","stable"},{"scope","user"},{"icon","gimp"},{"installed",false}}));
-            items.push_back(J::object({{"source","deb"},{"id","vlc"},{"name","VLC media player"},{"summary","Play your music and videos."},{"scope","system"},{"icon","vlc"},{"installed",true}}));
-            items.push_back(J::object({{"source","snap"},{"id","firefox"},{"name","Firefox"},{"summary","Browse the web."},{"scope","system"},{"icon","firefox"},{"installed",false}}));
-            populate(J::object({{"items",J(items)}}));
-            m_status->setText("Design preview · sample entries · software operations disabled");
+            m_featured=J::Array{
+                J::object({{"source","flatpak"},{"remote","flathub"},{"scope","system"},{"feature_name","Firefox"},{"name","Firefox"},{"query","firefox"},{"summary","Browse the web with a fast, private browser."},{"icon","firefox"}}),
+                J::object({{"source","deb"},{"scope","system"},{"feature_name","LibreOffice"},{"name","LibreOffice"},{"query","libreoffice"},{"summary","Documents, spreadsheets and presentations."},{"icon","libreoffice-startcenter"}}),
+                J::object({{"source","flatpak"},{"remote","flathub"},{"scope","system"},{"feature_name","VLC"},{"name","VLC"},{"query","vlc"},{"summary","Play your music and videos."},{"icon","vlc"}})};
+            m_featuredLoaded=true;landing();
         }
     }
-    ~Store(){cancelDetails();m_app.setMainMenu(nullptr);}
+    ~AppCenter(){cancelDetails();cancelDiscover();m_app.setMainMenu(nullptr);}
     void show(){m_window.show();}
     ui::Window& window(){return m_window;}
     void open(const std::string& path){inspect(path);}
@@ -205,13 +277,15 @@ private:
         m_bar->setVisible(value); m_bar->setIndeterminate(value);
         for(auto* b:m_nav) b->setEnabled(!value);
         m_search->setEnabled(!value);m_source->setEnabled(!value);m_reload->setEnabled(!value);
-        m_open->setEnabled(!value);m_refresh->setEnabled(!value);m_flatpakRefresh->setEnabled(!value);
+        m_refresh->setEnabled(!value);m_flatpakRefresh->setEnabled(!value);
+        if(value)m_footer->setVisible(true);
         m_list->setEnabled(!value);
         m_detail->setEnabled(!value);
     }
     void request(const J& data, std::function<void(const J&)> done, bool mutating=false) {
         if(m_preview || m_busy) return;
         cancelDetails();
+        if(mutating){cancelDiscover();m_featuredLoaded=false;}
         m_debounce.stop(); busy(true,mutating);m_status->setText(mutating?"Applying software changes…":"Loading…");
         m_process=std::make_unique<base::Process>(&m_app.loop());
         m_process->setStandardInput(data.serialize()+"\n");
@@ -253,8 +327,8 @@ private:
                 done(result);
             });
         };
-        std::string backend=STORE_BACKEND;
-        if(const char* env=std::getenv("CUTEFISH_STORE_BACKEND"))backend=env;
+        std::string backend=APP_CENTER_BACKEND;
+        if(const char* env=std::getenv("CUTEFISH_APP_CENTER_BACKEND"))backend=env;
         if(!m_process->start("/usr/bin/python3",{backend})) {
             busy(false);m_status->setText("Could not start the store backend.");
         }
@@ -264,6 +338,7 @@ private:
         m_message->setConfirmText("Close");m_message->setCancelVisible(false);m_message->show();
     }
     void chooseFile() {
+        if(m_page!="files")navigate("files");
         m_chooser=std::make_unique<ui::FileChooser>(&m_window);
         m_chooser->setTitle("Open software package");
         m_chooser->setAcceptLabel("Review");
@@ -272,34 +347,146 @@ private:
         m_chooser->open();
     }
     void inspect(std::string path) {
+        if(m_page!="files")navigate("files");
         if(auto local=base::url::toLocalFile(path))path=*local;
+        m_reviewedFile=std::filesystem::path(path).filename().string();
         request(J::object({{"op","inspect"},{"path",path}}),[this](const J& result){
+            filePage();m_detail->setVisible(true);m_footer->setVisible(true);
             m_variants={result["item"]};details(0);
             m_status->setText("Review the file, then choose Install or Import.");
         });
     }
+    void navigate(const std::string& page) {
+        if(m_busy)return;
+        cancelDetails();m_page=page;m_mode=page=="installed"?"installed":page=="updates"?"updates":"search";
+        m_search->setText("");m_source->setCurrentIndex(0);m_reviewedFile.clear();refresh();
+    }
+    void updateNavigation() {
+        for(size_t i=0;i<m_nav.size();i++)m_nav[i]->setSelected(m_navPages[i]==m_page);
+    }
+    void reloadView() {
+        if(m_busy)return;
+        cancelDiscover();m_featuredLoaded=false;refresh();
+    }
+    void resetPage() {
+        cancelDetails();m_variants.clear();m_groups.clear();m_rows.clear();m_selectedVariant=0;m_dropZone=nullptr;
+        m_detail->setContent<ui::Column>();
+        m_detail->setVisible(false);m_warnings->setVisible(false);m_footer->setVisible(false);
+    }
     void refresh() {
         if(m_busy)return;
-        m_title->setText(m_mode=="search"?"Discover":m_mode=="installed"?"Installed":"Updates");
-        m_subtitle->setText(m_mode=="search"?"Find apps across your configured software sources.":m_mode=="installed"?"Manage apps, packages, and your AppImage library.":"Available updates from sources that responded.");
-        if(m_mode=="search" && m_search->text().size()<2){landing();detailEmpty();return;}
+        updateNavigation();
+        const bool catalogPage=m_page=="discover" || m_page=="installed" || m_page=="updates";
+        m_controls->setVisible(catalogPage);m_metadataControls->setVisible(m_page=="updates");
+        m_title->setText(m_page=="files"?"Install from File":m_page=="about"?"About":m_page=="installed"?"Installed":m_page=="updates"?"Updates":"Discover");
+        m_subtitle->setVisible(m_page!="about" && !(m_page=="discover" && m_search->text().size()<2));
+        if(m_page=="files"){m_subtitle->setText("Review a .deb or AppImage before installing.");filePage();return;}
+        if(m_page=="about"){aboutPage();return;}
+        if(m_page=="discover" && m_search->text().size()<2){landing();loadDiscover();return;}
+        m_subtitle->setText(m_page=="discover"?"Find apps across your configured software sources.":m_page=="installed"?"Manage installed applications and packages.":"Available updates from your software sources.");
+        m_source->setVisible(true);m_reload->setVisible(true);m_footer->setVisible(true);
         static const std::vector<std::string> sources={"all","deb","flatpak","snap","appimage"};
         request(J::object({{"op","list"},{"mode",m_mode},{"query",m_search->text()},{"source",sources.at(std::max(0,m_source->currentIndex()))}}),[this](const J& result){populate(result);});
     }
-    void landing() {
-        m_groups.clear();m_rows.clear();m_warnings->setVisible(false);
-        auto* col=m_list->setContent<ui::Column>(); col->setSpacing(18);
-        auto* hero=col->addChild<Panel>(true); size(hero,-1,-1,true);hero->setSpacing(12);
-        label(hero,"A home for your apps",23,700,true);
-        label(hero,"Debian, Flatpak, Snap, and AppImage.\nChoose the source that works for you.",14,400,true);
-        label(col,"Start exploring",17,650);
-        for(auto term:{"Web browsers","Image editors","Media players","Development"}){
-            auto* b=col->addChild<ui::Button>(term);size(b,-1,44,true);
-            std::string query=term;
-            b->onClicked=[this,query]{m_search->setText(query);refresh();};
+    void searchFor(const std::string& query) {
+        if(m_busy)return;
+        m_page="discover";m_mode="search";m_search->setText(query);m_source->setCurrentIndex(0);refresh();
+    }
+    void cancelDiscover() {
+        ++m_discoverGeneration;
+        if(m_discoverProcess){m_discoverProcess->onFinished={};m_discoverProcess.reset();}
+    }
+    void loadDiscover() {
+        if(m_preview || m_featuredLoaded || m_discoverProcess)return;
+        const auto generation=++m_discoverGeneration;
+        m_discoverProcess=std::make_unique<base::Process>(&m_app.loop());
+        m_discoverProcess->setStandardInput(J::object({{"op","discover"}}).serialize()+"\n");
+        m_discoverProcess->onFinished=[this,generation](int,bool){
+            auto output=m_discoverProcess->standardOutput();
+            m_app.loop().post([this,generation,output]{
+                if(generation!=m_discoverGeneration)return;
+                m_discoverProcess.reset();m_featuredLoaded=true;
+                size_t pos=0;while(pos<output.size()){
+                    auto end=output.find('\n',pos);if(end==std::string::npos)end=output.size();
+                    auto result=J::parse(output.substr(pos,end-pos));if(result && str(*result,"event")=="result" && (*result)["ok"].toBool())m_featured=(*result)["items"].toArray();pos=end+1;
+                }
+                if(m_page=="discover" && m_search->text().size()<2 && !m_busy)landing();
+            });
+        };
+        std::string backend=APP_CENTER_BACKEND;if(const char* path=std::getenv("CUTEFISH_APP_CENTER_BACKEND"))backend=path;
+        if(!m_discoverProcess->start("/usr/bin/python3",{backend})){
+            m_discoverProcess.reset();m_featuredLoaded=true;landing();
         }
-        label(col,"AppImages",16,650);
-        label(col,"Download from a publisher you trust, then open the file here to add it to your library.",12,400,true);
+    }
+    void landing() {
+        resetPage();m_source->setVisible(false);m_reload->setVisible(false);
+        auto* content=m_list->setContent<ui::Column>();content->setSpacing(22);content->setMargins({0,4,0,18});
+        auto* heading=content->addChild<ui::Row>();heading->setSpacing(10);size(heading,-1,-1,true);
+        size(label(heading,"Featured apps",19,650),-1,-1,true);
+        const size_t pages=std::max(size_t(1),(m_featured.size()+2)/3);m_featuredPage=std::min(m_featuredPage,pages-1);
+        if(!m_featured.empty()){
+            auto* previous=heading->addChild<ui::Button>("‹");size(previous,32,30);previous->setToolTip("Previous featured apps");previous->setEnabled(m_featuredPage>0);
+            size(label(heading,std::to_string(m_featuredPage+1)+" / "+std::to_string(pages),11),42,-1);
+            auto* next=heading->addChild<ui::Button>("›");size(next,32,30);next->setToolTip("Next featured apps");next->setEnabled(m_featuredPage+1<pages);
+            previous->onClicked=[this]{m_app.loop().post([this]{if(m_featuredPage>0)--m_featuredPage;landing();});};
+            next->onClicked=[this]{m_app.loop().post([this]{++m_featuredPage;landing();});};
+            auto* cards=content->addChild<ui::Row>();cards->setSpacing(14);size(cards,-1,204,true);
+            const size_t start=m_featuredPage*3;
+            for(size_t i=start;i<std::min(start+3,m_featured.size());i++){
+                auto* card=cards->addChild<FeaturedCard>(m_featured[i]);const auto query=str(m_featured[i],"query");
+                card->onClicked=[this,query]{m_app.loop().post([this,query]{searchFor(query);});};
+            }
+        } else {
+            auto* empty=content->addChild<Panel>();size(empty,-1,150,true);
+            label(empty,m_featuredLoaded?"No featured apps available":"Loading featured apps…",15,550,true);
+            if(m_featuredLoaded){label(empty,"Search your configured sources or explore a category below.",12,400,true);}
+        }
+        label(content,"Explore categories",19,650);
+        auto* categories=content->addChild<ui::Grid>(3);categories->setColumnSpacing(12);categories->setRowSpacing(12);size(categories,-1,-1,true);
+        for(const auto& category:std::vector<std::vector<std::string>>{
+            {"Internet","Browsers, mail and chat","applications-internet","internet"},
+            {"Graphics","Images, illustration and design","applications-graphics","graphics"},
+            {"Office","Documents and productivity","applications-office","office"},
+            {"Audio & Video","Music, players and editing","applications-multimedia","audio video"},
+            {"Development","Editors and developer tools","applications-development","development"},
+            {"Games","Puzzles, strategy and more","applications-games","games"},
+            {"Education","Learning and reference","applications-education","education"},
+            {"Utilities","Useful everyday tools","applications-utilities","utilities"}}){
+            auto* tile=categories->addChild<CategoryTile>(category[0],category[1],category[2]);auto query=category[3];
+            tile->onClicked=[this,query]{m_app.loop().post([this,query]{searchFor(query);});};
+        }
+    }
+    void filePage() {
+        resetPage();
+        auto* content=m_list->setContent<ui::Column>();content->setSpacing(18);content->setMargins({0,12,0,18});
+        m_dropZone=content->addChild<DropPanel>();m_dropZone->setSpacing(16);m_dropZone->setMargins(ui::Margins::all(30));size(m_dropZone,-1,310,true);
+        auto* icon=m_dropZone->addChild<ui::IconImage>("document-open",56);size(icon,56,56);
+        label(m_dropZone,"Drop a package here",23,650,true);
+        label(m_dropZone,"Debian packages (.deb) and AppImages",13,400,true);
+        auto* row=m_dropZone->addChild<ui::Row>();size(row,-1,-1,true);
+        auto* choose=row->addChild<ui::DialogButton>("Choose File…",true);size(choose,160,40);choose->setEnabled(!m_preview);choose->onClicked=[this]{chooseFile();};
+        if(!m_reviewedFile.empty()){
+            auto* selected=content->addChild<Panel>();label(selected,"Selected file",11,550);label(selected,m_reviewedFile,14,600,true);
+        }
+        label(content,"You’ll review the file and software changes before anything is installed.",12,400,true);
+    }
+    void aboutPage() {
+        resetPage();
+        auto* content=m_list->setContent<ui::Column>();content->setMargins({0,12,0,18});content->setSpacing(18);
+        auto* panel=content->addChild<Panel>();panel->setMargins(ui::Margins::all(28));panel->setSpacing(22);size(panel,-1,-1,true);
+        auto* hero=panel->addChild<ui::Row>();hero->setSpacing(20);size(hero,-1,-1,true);
+        auto* icon=hero->addChild<ui::IconImage>(m_brandIcon,80);icon->setFallbackName("system-software-install");size(icon,80,80);
+        auto* title=hero->addChild<ui::Column>();title->setSpacing(8);size(title,-1,-1,true);
+        label(title,m_displayName,26,700,true);label(title,std::string("Version ")+APP_CENTER_VERSION,13,400,true);
+        label(panel,"A software manager for the Cutefish desktop.",15,400,true);
+        auto* author=panel->addChild<ui::Column>();author->setSpacing(6);
+        label(author,"Created by",11,500);label(author,m_author,18,650,true);
+        label(panel,"Developed for Cutefish and NordOS. This is an independent community project.",13,400,true);
+        auto* facts=panel->addChild<ui::Column>();facts->setSpacing(10);
+        label(facts,"License  BSD-3-Clause",12,400,true);label(facts,"System  "+m_distribution,12,400,true);
+        auto* links=panel->addChild<ui::Row>();links->setSpacing(12);size(links,-1,-1,true);
+        auto* source=links->addChild<ui::Button>("View Source ↗");source->setEnabled(!m_preview);source->onClicked=[this]{openWebsite(m_projectUrl);};
+        auto* issue=links->addChild<ui::Button>("Report an Issue ↗");issue->setEnabled(!m_preview);issue->onClicked=[this]{openWebsite(m_projectUrl+"/issues");};
     }
     void detailEmpty() {
         cancelDetails();m_variants.clear();m_selectedVariant=0;
@@ -319,6 +506,7 @@ private:
         return str(item,"source")+":"+str(item,"id");
     }
     void populate(const J& result) {
+        m_detail->setVisible(true);m_footer->setVisible(true);
         m_groups.clear();m_rows.clear();
         std::map<std::string,size_t> keys;
         for(auto& item:result["items"].toArray()) {
@@ -331,7 +519,7 @@ private:
             auto* empty=col->addChild<Panel>();
             label(empty,m_mode=="updates"?"No updates reported":"No results",21,650,true);
             label(empty,"Check the source messages below, or try another search.",13,400,true);
-            detailEmpty();
+            detailEmpty();m_detail->setVisible(false);
         }
         for(size_t i=0;i<m_groups.size();i++) {
             auto* row=col->addChild<AppRow>(m_groups[i][0]);
@@ -358,7 +546,7 @@ private:
     void setupMenu() {
         m_mainMenu=std::make_unique<ui::Menu>();
         auto* application=m_mainMenu->addSubmenu(m_displayName);application->setRole(ui::MenuRole::Application);
-        application->addItem("About "+m_displayName,[this]{message("About "+m_displayName,std::string("Version ")+STORE_VERSION+"\n\nA native software manager for Cutefish on Debian.\nDebian · Flatpak · Snap · AppImage\n\nBSD-3-Clause · Cutefish Store contributors");});
+        application->addItem("About "+m_displayName,[this]{navigate("about");});
         application->addSeparator();
         auto quit=[this]{if(m_mutating)message("Software operation","Please wait for the software operation to finish before quitting.");else m_app.quit();};
         auto q=application->addItem("Quit "+m_displayName,quit);application->setItemKeyEquivalent(q,"q",ui::ControlModifier);
@@ -371,18 +559,16 @@ private:
         });
         file->onAboutToShow=[this,file,open,launch]{file->setItemEnabled(open,!m_busy && !m_preview);file->setItemEnabled(launch,!m_busy && !m_preview && m_selectedVariant<m_variants.size() && m_variants[m_selectedVariant]["can_open"].toBool());};
         auto* view=m_mainMenu->addSubmenu("View");
-        for(auto mode:{"Discover","Installed","Updates"}){
-            std::string name=mode;view->addItem(name,[this,name]{if(m_busy)return;m_mode=name=="Discover"?"search":name=="Installed"?"installed":"updates";m_search->setText("");refresh();});
-        }
+        for(const auto& entry:std::vector<std::pair<std::string,std::string>>{{"Discover","discover"},{"Installed","installed"},{"Updates","updates"},{"Install from File","files"}}){view->addItem(entry.first,[this,page=entry.second]{navigate(page);});}
         view->addSeparator();
-        auto search=[this]{if(!m_busy)m_search->setFocus();};
+        auto search=[this]{if(m_busy)return;if(m_page=="files" || m_page=="about")navigate("discover");m_search->setFocus();};
         auto find=view->addItem("Search",search);view->setItemKeyEquivalent(find,"f",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'f',search);
-        auto reload=view->addItem("Reload",[this]{if(!m_busy)refresh();});view->setItemKeyEquivalent(reload,"r",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'r',[this]{if(!m_busy)refresh();});
+        auto reload=view->addItem("Reload",[this]{reloadView();});view->setItemKeyEquivalent(reload,"r",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'r',[this]{reloadView();});
         auto* software=m_mainMenu->addSubmenu("Software");
         software->addItem("Refresh Debian Catalog",[this]{if(!m_busy)request(J::object({{"op","refresh"}}),[this](const J&){refresh();},true);});
         software->addItem("Refresh Flatpak Catalog",[this]{if(!m_busy)request(J::object({{"op","refresh_flatpak"}}),[this](const J&){refresh();},true);});
         auto* help=m_mainMenu->addSubmenu("Help");help->setRole(ui::MenuRole::Help);
-        help->addItem("Build Instructions and Help",[this]{openWebsite("https://github.com/serjykalstryke/cutefish-store#build-from-source-on-debian-13");});
+        help->addItem("Build Instructions and Help",[this]{openWebsite("https://github.com/serjykalstryke/cutefish-app-center#build-from-source-on-debian-13");});
         m_app.setMainMenu(m_mainMenu.get());
     }
     void openWebsite(const std::string& url) {
@@ -419,7 +605,7 @@ private:
                 renderDetails(index);
             });
         };
-        std::string backend=STORE_BACKEND;if(const char* path=std::getenv("CUTEFISH_STORE_BACKEND"))backend=path;
+        std::string backend=APP_CENTER_BACKEND;if(const char* path=std::getenv("CUTEFISH_APP_CENTER_BACKEND"))backend=path;
         if(!m_detailProcess->start("/usr/bin/python3",{backend})){
             m_detailProcess.reset();m_variants[index].insert("details_loaded",true);m_variants[index].insert("details_note","Additional details could not be loaded.");renderDetails(index);
         }
@@ -537,7 +723,9 @@ private:
     }
     ui::Application& m_app;
     bool m_preview=false,m_busy=false,m_mutating=false;
-    std::string m_mode="search",m_buffer,m_displayName;
+    std::string m_mode="search",m_page="discover",m_buffer,m_displayName,m_author,m_brandIcon,m_distribution,m_projectUrl,m_reviewedFile;
+    J::Array m_featured;bool m_featuredLoaded=false;size_t m_featuredPage=0;
+    unsigned long m_discoverGeneration=0;
     size_t m_selectedVariant=0;
     unsigned long m_detailGeneration=0;
     std::unique_ptr<ui::Menu> m_mainMenu;
@@ -545,14 +733,17 @@ private:
     ui::Label *m_title,*m_subtitle,*m_status,*m_warnings;
     ui::SearchField* m_search;
     ui::ComboBox* m_source;
-    ui::Button *m_open,*m_reload,*m_refresh,*m_flatpakRefresh;
+    ui::Button *m_reload,*m_refresh,*m_flatpakRefresh;
+    ui::Row *m_controls,*m_footer,*m_metadataControls;
+    DropPanel* m_dropZone=nullptr;
     ui::ProgressBar* m_bar;
     ui::ScrollView *m_list,*m_detail;
-    std::vector<ui::Button*> m_nav;
+    std::vector<NavigationItem*> m_nav;
+    std::vector<std::string> m_navPages;
     std::vector<AppRow*> m_rows;
     std::vector<std::vector<J>> m_groups;
     std::vector<J> m_variants;
-    std::unique_ptr<base::Process> m_process,m_detailProcess;
+    std::unique_ptr<base::Process> m_process,m_detailProcess,m_discoverProcess;
     base::Timer m_debounce;
     std::unique_ptr<ui::FileChooser> m_chooser;
     std::unique_ptr<ui::ConfirmDialog> m_message;
@@ -565,12 +756,12 @@ int main(int argc,char** argv) {
         std::string arg=argv[i];
         if(arg=="--preview")preview=true;
         else if(arg=="--screenshot" && i+1<argc){screenshot=argv[++i];preview=true;}
-        else if(arg=="--help") {std::cout<<"cutefish-store [FILE.deb|FILE.AppImage] [--preview] [--screenshot PATH]\n";return 0;}
+        else if(arg=="--help") {std::cout<<"cutefish-app-center [FILE.deb|FILE.AppImage] [--preview] [--screenshot PATH]\n";return 0;}
         else if(path.empty())path=arg;
     }
     ui::Application app(argc,argv,screenshot.empty()?ui::Application::Platform::Wayland:ui::Application::Platform::Headless);
-    app.setApplicationId("org.cutefish.Store");
-    Store store(app,preview);store.show();
+    app.setApplicationId("org.cutefish.AppCenter");
+    AppCenter store(app,preview);store.show();
     if(!screenshot.empty())return store.window().grab().savePng(screenshot)?0:1;
     if(!path.empty())app.loop().post([&]{store.open(path);});
     return app.run();
