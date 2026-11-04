@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Cutefish App Center
+GenericName=Software Management
+Keywords=Apps;Software;Packages;Debian;Flatpak;Snap;AppImage;
+Comment=Find, install, update and remove software
+Exec=cutefish-app-center %f
+Icon=org.cutefish.AppCenter
+Terminal=false
+Categories=System;PackageManager;
+MimeType=application/vnd.debian.binary-package;application/x-deb;application/x-iso9660-appimage;application/vnd.appimage;application/x-appimage;
+StartupNotify=true

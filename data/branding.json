@@ -1,6 +1,8 @@
 {
-  "display_name": "Cutefish Store",
-  "tagline": "Made for Cutefish",
+  "display_name": "Cutefish App Center",
+  "sidebar_name": "App Center",
+  "author": "David Stinnett",
   "distribution_label": "Debian 13",
-  "icon": "org.cutefish.Store"
+  "icon": "org.cutefish.AppCenter",
+  "project_url": "https://github.com/serjykalstryke/cutefish-app-center"
 }
