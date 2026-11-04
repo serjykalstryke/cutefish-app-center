@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <set>
 #include <vector>
 #include <cstdlib>
 
@@ -48,7 +49,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.2.1"
+#define APP_CENTER_VERSION "0.2.2"
 #endif
 
 static J branding() {
@@ -96,21 +97,22 @@ public:
     explicit AppRow(const J& item): ui::Button("") {
         auto* row=addChild<ui::Row>(); m_row=row;
         row->setSpacing(12); row->setMargins({12,10,12,10});
-        auto* icon=row->addChild<ui::IconImage>(str(item,"icon"),40);
-        icon->setFallbackName("application-x-executable"); size(icon,40,40);
+        m_icon=row->addChild<ui::IconImage>(str(item,"icon"),40);
+        m_icon->setFallbackName("application-x-executable"); size(m_icon,40,40);
         auto* text=row->addChild<ui::Column>(); size(text,-1,-1,true); text->setSpacing(4);
         label(text,str(item,"name"),15,600);
         auto* sub=label(text,sourceName(item),11); sub->setColor(ui::ColorId::DisabledText);
         size(this,-1,72,true);
     }
     void selected(bool selected) { m_selected=selected; requestPaint(); }
+    void setIcon(const std::string& path) { m_icon->setName(path); }
 protected:
     void layout() override { ui::Button::layout(); m_row->setGeometry(localRect()); }
     void paint(ui::Painter& p) override {
         ui::Button::paint(p);
         if(m_selected) p.strokeRoundedRect(localRect().adjusted(1,1,-1,-1),10,ui::Theme::current().highlight,2);
     }
-private: ui::Row* m_row; bool m_selected=false;
+private: ui::Row* m_row; ui::IconImage* m_icon; bool m_selected=false;
 };
 
 class NavigationItem : public ui::Button {
@@ -191,7 +193,7 @@ private:bool m_active=false;
 
 class AppCenter {
 public:
-    AppCenter(ui::Application& app, bool preview): m_app(app), m_preview(preview), m_debounce(&app.loop()) {
+    AppCenter(ui::Application& app, bool preview): m_app(app), m_preview(preview), m_debounce(&app.loop()), m_iconDebounce(&app.loop()) {
         auto brand=branding();
         const auto displayName=brand["display_name"].toString("Cutefish App Center");
         m_displayName=displayName;
@@ -244,6 +246,7 @@ public:
         m_reload=controls->addChild<ui::Button>("Reload"); m_reload->onClicked=[this]{reloadView();};
         auto* workspace=main->addChild<ui::Row>(); workspace->setSpacing(18); size(workspace,-1,-1,true,true);
         m_list=workspace->addChild<ui::ScrollView>(); size(m_list,-1,-1,true,true);
+        m_list->onScrolled=[this]{m_iconDebounce.start(80ms);};
         m_detail=workspace->addChild<ui::ScrollView>(); size(m_detail,412,-1,false,true);
         m_warnings=label(main,"",11,400,true); m_warnings->setMaximumLineCount(3); m_warnings->setColor(ui::ColorId::DisabledText); m_warnings->setVisible(false);
         auto* footer=main->addChild<ui::Row>();m_footer=footer; footer->setSpacing(12); size(footer,-1,28,true);
@@ -256,6 +259,7 @@ public:
         m_refresh->setToolTip("Ask the system package service to download the latest repository metadata.");
         m_refresh->onClicked=[this]{request(J::object({{"op","refresh"}}),[this](const J&){refresh();},true);};
         m_debounce.setSingleShot(true); m_debounce.onTimeout=[this]{if(!m_busy)refresh();};
+        m_iconDebounce.setSingleShot(true);m_iconDebounce.onTimeout=[this]{loadVisibleIcons();};
         m_window.setContentView(std::move(drop));
         setupMenu();
         navigate("discover");
@@ -284,7 +288,7 @@ private:
     }
     void request(const J& data, std::function<void(const J&)> done, bool mutating=false) {
         if(m_preview || m_busy) return;
-        cancelDetails();
+        cancelDetails();cancelIcons();
         if(mutating){cancelDiscover();m_featuredLoaded=false;}
         m_debounce.stop(); busy(true,mutating);m_status->setText(mutating?"Applying software changes…":"Loading…");
         m_process=std::make_unique<base::Process>(&m_app.loop());
@@ -369,7 +373,7 @@ private:
         cancelDiscover();m_featuredLoaded=false;refresh();
     }
     void resetPage() {
-        cancelDetails();m_variants.clear();m_groups.clear();m_rows.clear();m_selectedVariant=0;m_dropZone=nullptr;
+        cancelDetails();cancelIcons();m_variants.clear();m_groups.clear();m_rows.clear();m_selectedVariant=0;m_dropZone=nullptr;
         m_detail->setContent<ui::Column>();
         m_detail->setVisible(false);m_warnings->setVisible(false);m_footer->setVisible(false);
     }
@@ -506,6 +510,7 @@ private:
         return str(item,"source")+":"+str(item,"id");
     }
     void populate(const J& result) {
+        cancelIcons();
         m_detail->setVisible(true);m_footer->setVisible(true);
         m_groups.clear();m_rows.clear();
         std::map<std::string,size_t> keys;
@@ -534,6 +539,55 @@ private:
         if(!str(result,"message").empty())count+=" · "+str(result,"message");
         m_status->setText(count);
         if(!m_groups.empty())select(0);
+        m_iconDebounce.start(1ms);
+    }
+    void cancelIcons() {
+        ++m_iconGeneration;m_iconDebounce.stop();m_iconAttempted.clear();
+        if(m_iconProcess){m_iconProcess->onStandardOutput={};m_iconProcess->onFinished={};m_iconProcess.reset();}
+        m_iconBuffer.clear();
+    }
+    void applyListIcon(const std::string& key,const std::string& path) {
+        if(key.empty() || !std::filesystem::path(path).is_absolute())return;
+        for(size_t i=0;i<m_groups.size();i++){
+            for(auto& variant:m_groups[i])if(str(variant,"icon_key")==key)variant.insert("icon",path);
+            if(i<m_rows.size() && str(m_groups[i][0],"icon_key")==key)m_rows[i]->setIcon(path);
+        }
+        for(auto& variant:m_variants)if(str(variant,"icon_key")==key)variant.insert("icon",path);
+    }
+    void loadVisibleIcons() {
+        if(m_preview || m_busy || m_iconProcess || m_rows.empty() || !m_list->isVisible())return;
+        const auto top=m_list->mapToWindow({0,0}).y;
+        const auto bottom=top+m_list->geometry().height;
+        J::Array keys;
+        for(size_t i=0;i<m_rows.size() && keys.size()<12;i++){
+            auto* row=m_rows[i];const auto y=row->mapToWindow({0,0}).y;
+            if(y+row->geometry().height<top-80 || y>bottom+80)continue;
+            auto key=str(m_groups[i][0],"icon_key");
+            if(!key.empty() && m_iconAttempted.insert(key).second)keys.push_back(key);
+        }
+        if(keys.empty())return;
+        const auto generation=m_iconGeneration;m_iconBuffer.clear();
+        m_iconProcess=std::make_unique<base::Process>(&m_app.loop());
+        m_iconProcess->setStandardInput(J::object({{"op","icons"},{"keys",keys}}).serialize()+"\n");
+        m_iconProcess->onStandardOutput=[this,generation](std::string_view bytes){
+            if(generation!=m_iconGeneration)return;
+            m_iconBuffer.append(bytes);size_t end;
+            while((end=m_iconBuffer.find('\n'))!=std::string::npos){
+                auto event=J::parse(m_iconBuffer.substr(0,end));m_iconBuffer.erase(0,end+1);
+                if(event && str(*event,"event")=="icon"){
+                    const auto key=str(*event,"key"),path=str(*event,"path");
+                    m_app.loop().post([this,generation,key,path]{if(generation==m_iconGeneration)applyListIcon(key,path);});
+                }
+            }
+        };
+        m_iconProcess->onFinished=[this,generation](int,bool){
+            m_app.loop().post([this,generation]{
+                if(generation!=m_iconGeneration)return;
+                m_iconProcess.reset();m_iconDebounce.start(80ms);
+            });
+        };
+        std::string backend=APP_CENTER_BACKEND;if(const char* path=std::getenv("CUTEFISH_APP_CENTER_BACKEND"))backend=path;
+        if(!m_iconProcess->start("/usr/bin/python3",{backend}))m_iconProcess.reset();
     }
     void select(size_t i) {
         for(size_t n=0;n<m_rows.size();n++)m_rows[n]->selected(n==i);
@@ -597,6 +651,7 @@ private:
                 }
                 if(result["ok"].toBool()) {
                     m_variants[index]=result["item"];
+                    applyListIcon(str(m_variants[index],"icon_key"),str(m_variants[index],"icon"));
                     if(result["warnings"].size())m_variants[index].insert("details_note",result["warnings"][0]);
                 } else {
                     m_variants[index].insert("details_loaded",true);
@@ -727,7 +782,9 @@ private:
     J::Array m_featured;bool m_featuredLoaded=false;size_t m_featuredPage=0;
     unsigned long m_discoverGeneration=0;
     size_t m_selectedVariant=0;
-    unsigned long m_detailGeneration=0;
+    unsigned long m_detailGeneration=0,m_iconGeneration=0;
+    std::set<std::string> m_iconAttempted;
+    std::string m_iconBuffer;
     std::unique_ptr<ui::Menu> m_mainMenu;
     ui::Window m_window;
     ui::Label *m_title,*m_subtitle,*m_status,*m_warnings;
@@ -743,8 +800,8 @@ private:
     std::vector<AppRow*> m_rows;
     std::vector<std::vector<J>> m_groups;
     std::vector<J> m_variants;
-    std::unique_ptr<base::Process> m_process,m_detailProcess,m_discoverProcess;
-    base::Timer m_debounce;
+    std::unique_ptr<base::Process> m_process,m_detailProcess,m_discoverProcess,m_iconProcess;
+    base::Timer m_debounce,m_iconDebounce;
     std::unique_ptr<ui::FileChooser> m_chooser;
     std::unique_ptr<ui::ConfirmDialog> m_message;
     std::unique_ptr<ui::DialogWindow> m_review,m_imageViewer;
