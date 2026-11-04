@@ -8,7 +8,7 @@ import tempfile
 
 parser=argparse.ArgumentParser()
 parser.add_argument('binary',type=Path)
-parser.add_argument('--output',type=Path,default=Path('cutefish-app-center_0.2.1_amd64.deb'))
+parser.add_argument('--output',type=Path,default=Path('cutefish-app-center_0.2.2_amd64.deb'))
 args=parser.parse_args()
 source=Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='cutefish-app-center-package-') as temp:
@@ -27,10 +27,10 @@ with tempfile.TemporaryDirectory(prefix='cutefish-app-center-package-') as temp:
  size=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())//1024
  (root/'DEBIAN').mkdir()
  (root/'DEBIAN/control').write_text(f'''Package: cutefish-app-center
-Version: 0.2.1
+Version: 0.2.2
 Architecture: amd64
 Maintainer: Cutefish App Center contributors
-Provides: cutefish-store (= 0.2.1)
+Provides: cutefish-store (= 0.2.2)
 Replaces: cutefish-store
 Conflicts: cutefish-store
 Section: admin
