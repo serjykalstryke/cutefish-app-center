@@ -1,33 +1,35 @@
 # Shared development and NordOS integration
 
-Keep one application codebase. The default project name is Cutefish Store;
+Keep one application codebase. The default project name is Cutefish App Center;
 this repository is independent until Cutefish agrees to upstream adoption.
 NordOS can ship the same executable and providers with different branding.
 
 ## Branding available now
 
-The native window reads `/usr/share/cutefish-store/branding.json`:
+The native window reads `/usr/share/cutefish-app-center/branding.json`:
 
 ```json
 {
   "display_name": "Nord Software",
-  "tagline": "Made for NordOS",
+  "sidebar_name": "App Center",
+  "author": "David Stinnett",
+  "project_url": "https://github.com/serjykalstryke/cutefish-app-center",
   "distribution_label": "NordOS",
-  "icon": "org.cutefish.Store"
+  "icon": "org.cutefish.AppCenter"
 }
 ```
 
 For an uninstalled preview:
 
 ```sh
-CUTEFISH_STORE_BRANDING=/path/to/nordos-branding.json ./build/cutefish-store --preview
+CUTEFISH_APP_CENTER_BRANDING=/path/to/nordos-branding.json ./build/cutefish-app-center --preview
 ```
 
-The JSON changes the window/header name, sidebar tagline and distribution
+The JSON changes the window name, sidebar name, About credit/project links, distribution
 label and sidebar icon. NordOS packaging should also customize the desktop-entry Name/Comment,
 icon artwork and AppStream display metadata. Those assets are intentionally
-separate from provider logic. The stable `org.cutefish.Store` application ID
-and `cutefish-store` package name currently remain the same; the two branded
+separate from provider logic. The stable `org.cutefish.AppCenter` application ID
+and `cutefish-app-center` package name currently remain the same; the two branded
 packages should replace each other, not be co-installed.
 
 ## Release integration
@@ -41,8 +43,8 @@ packages both own the same branding file; either generate it while building
 the NordOS store package or add a properly designed configuration override
 mechanism before shipping a separate branding package.
 
-Source enablement, featured apps and provider preference configuration are
-future work. The current app uses the system's existing APT sources, Flatpak
+Source enablement, custom featured selections and provider preference
+configuration are future work. The current app uses the system's existing APT sources, Flatpak
 remotes and snapd service. It does not add repositories automatically.
 
 A downstream code fork is only needed for substantial changes that cannot be

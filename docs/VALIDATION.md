@@ -3,7 +3,7 @@
 Built on Debian 13 amd64 against the installed native Cutefish toolkit:
 `1.0~git20261102154148.6106b19-1+nordos.snap1`.
 
-## Passed
+## Initial prototype checks
 
 - CMake Release configuration and build with GCC 14.2.0, including the optional native smoke-test target. C++ compilation with `-Wall -Wextra -Wpedantic` produced no diagnostics.
 - 15 backend tests: local Debian inspection, AppImage import/remove without execution, retained downloads, duplicate/changed files, invalid IDs, Flatpak scope/ref/branch retention, exact Debian update architecture, provider failure isolation, stale plans, protected Debian removals, classic Snap review, update limits, and transaction locking.
@@ -15,7 +15,7 @@ Built on Debian 13 amd64 against the installed native Cutefish toolkit:
 - Flatpak CLI availability, remotes and installed inventory checked. Flathub is configured system-wide; no Flatpak apps were installed. Search returned no matches with the current local catalog state.
 - Generated Debian package inspected; no maintainer scripts or privileged helper are included. APT installation simulation resolved it with PackageKit and its client library, with no removals.
 
-## Not verified
+## Initial prototype limitations
 
 No real application installation, removal, upgrade, repository change or catalog refresh was performed. PackageKit is absent from the host, so its actual APT backend and Polkit flow remain untested. Flatpak/Snap mutations, file chooser interaction, actual AppImage launching, authentication failure and recovery, accessibility and localization need further validation.
 
@@ -69,3 +69,28 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
 - The live native details test rendered actual Firefox metadata, Mozilla publisher information, cached icon and all three catalog screenshots. Live read-only checks also resolved Chromium's installed desktop launcher and fetched VLC's Snap publisher/media metadata.
 - An actual Cutefish session displayed the application-name menu and File, View, Software and Help entries in the universal top bar. The sidebar reaches the top of the window; its internal corner radius is zero in the final build.
 - Missing publisher fields and screenshots remain source-dependent. Imported AppImages do not gain screenshots unless a source provides them. No real application installation/removal or repository change was needed for these checks.
+
+
+## 0.2.0 App Center and browsing UI
+
+- Renamed repository, CMake project, executable, backend, environment overrides,
+  package, desktop/icon/AppStream identity, paths and documentation. Historical
+  copyright notices and explicit upgrade compatibility keep the old name.
+- 74 checks passed: 27 backend, 15 search, 19 details/artwork/launch,
+  11 Discover/migration and 2 private PackageKit protocol tests.
+- Discover fixtures require advertised exact app refs, omit unavailable picks,
+  isolate provider errors, support Debian-only fallback and cover all eight
+  category mappings. Migration fixtures cover preserved image bytes/artwork,
+  original downloads, interrupted moves, duplicate imports, changed archives,
+  legacy symlinks and active legacy transactions.
+- Release build and all three native smoke tests passed. Native navigation
+  covers carousel paging, category search, About author/version, file-drop
+  review, return navigation and the retained search/details experience.
+- Live read-only Discover resolved six available applications from configured
+  catalogs in about 1.1 seconds. Discover, About and Install from File were
+  rendered and visually checked with the native toolkit. Fixture tests never
+  launch real applications or mutate installed software.
+- APT simulation replaces only `cutefish-store` 0.1.4 with
+  `cutefish-app-center` 0.2.0 and needs no additional dependencies on this host.
+  This simulation and the private transaction tests do not establish a real
+  package upgrade or real-library migration; those require desktop validation.
