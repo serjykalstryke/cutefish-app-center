@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Cutefish Store
+Comment=Find, install, update and remove software
+Exec=cutefish-store %f
+Icon=org.cutefish.Store
+Terminal=false
+Categories=System;PackageManager;
+MimeType=application/vnd.debian.binary-package;application/x-deb;application/x-iso9660-appimage;application/vnd.appimage;application/x-appimage;
+StartupNotify=true
