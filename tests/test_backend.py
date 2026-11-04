@@ -185,4 +185,71 @@ class BackendTests(unittest.TestCase):
             with self.assertRaisesRegex(b.StoreError,'Another'):
                 with b.mutation_lock(): pass
 
+    def bundled_image(self, *, icon=b'', icon_path='demo.png', dir_icon=None, desktop=None):
+        if not b.shutil.which('mksquashfs') or not b.shutil.which('prlimit'):
+            self.skipTest('squashfs-tools and util-linux are required')
+        folder=self.root/'AppDir'; folder.mkdir(exist_ok=True)
+        (folder/'demo.desktop').write_text(desktop or '[Desktop Entry]\nType=Application\nName=Demo App\nComment=An embedded app\nIcon=demo\nCategories=Graphics;Utility;\nStartupWMClass=demo-window\nX-AppImage-Version=2.3\nExec=/untrusted/program --unsafe\n')
+        if icon:
+            dest=folder/icon_path;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(icon)
+        if dir_icon:
+            (folder/'.DirIcon').symlink_to(dir_icon)
+        filesystem=self.root/'filesystem.squashfs'
+        subprocess.run(['mksquashfs',str(folder),str(filesystem),'-noappend','-processors','1','-comp','gzip','-no-progress'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        archive=self.root/'Bundled.AppImage'
+        archive.write_bytes(b'\x7fELF\x02\x01\x01\x00AI\x02'+bytes(64)+filesystem.read_bytes())
+        return archive
+    def png(self):
+        import base64
+        return base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aBZkAAAAASUVORK5CYII=')
+    def test_import_uses_embedded_name_icon_and_window_class_without_source_exec(self):
+        archive=self.bundled_image(icon=self.png())
+        b.apply(b.plan(b.inspect_local(str(archive)),'install'))
+        item=b.appimage_items()[0]
+        self.assertEqual(item['name'],'Demo App');self.assertEqual(item['summary'],'An embedded app')
+        self.assertEqual(item['version'],'2.3')
+        self.assertEqual(Path(item['icon']).read_bytes(),self.png())
+        launcher=next((self.root/'data/applications').glob('*.desktop')).read_text()
+        self.assertIn('Icon='+item['icon'],launcher)
+        self.assertIn('StartupWMClass=demo-window',launcher)
+        self.assertIn('Categories=Graphics;Utility;',launcher)
+        self.assertNotIn('/untrusted/program',launcher)
+        self.assertIn(b.desktop_quote(item['path']),launcher)
+    def test_diricon_can_link_to_an_icon_inside_the_archive(self):
+        archive=self.bundled_image(icon=self.png(),icon_path='usr/share/icons/demo.png',dir_icon='usr/share/icons/demo.png')
+        fields,artwork,suffix=b.embedded_appimage_metadata(archive)
+        self.assertEqual(artwork,self.png());self.assertEqual(suffix,'png')
+    def test_archive_symlink_cannot_read_an_icon_outside_the_archive(self):
+        secret=self.root/'outside.png';secret.write_bytes(self.png())
+        archive=self.bundled_image(dir_icon=str(secret))
+        _,artwork,_=b.embedded_appimage_metadata(archive)
+        self.assertIsNone(artwork)
+    def test_existing_import_gets_metadata_and_launcher_repaired(self):
+        archive=self.bundled_image(icon=self.png())
+        checked=b.inspect_local(str(archive));b.apply(b.plan(checked,'install'))
+        dest=self.root/'data/cutefish-store/appimages'/checked['id']
+        old=dict(checked,installed=True,path=str(dest/'application.AppImage'))
+        (dest/'metadata.json').write_text(json.dumps(old))
+        item=b.appimage_items()[0]
+        self.assertEqual(item['metadata_version'],b.APPIMAGE_METADATA_VERSION)
+        self.assertEqual(item['name'],'Demo App')
+        self.assertTrue(Path(item['icon']).exists())
+        self.assertEqual(b.file_hash(Path(item['path'])),checked['id'])
+    def test_oversized_embedded_icon_does_not_prevent_import(self):
+        archive=self.bundled_image(icon=self.png()+bytes(b.ICON_MAX_BYTES))
+        b.apply(b.plan(b.inspect_local(str(archive)),'install'))
+        item=b.appimage_items()[0]
+        self.assertEqual(item['icon'],'application-x-executable')
+        self.assertEqual(item['name'],'Demo App')
+    def test_svg_with_external_resources_is_not_installed(self):
+        svg=b'<svg xmlns="http://www.w3.org/2000/svg"><image href="file:///etc/passwd"/></svg>'
+        archive=self.bundled_image(icon=svg,icon_path='demo.svg')
+        _,artwork,_=b.embedded_appimage_metadata(archive)
+        self.assertIsNone(artwork)
+    def test_missing_archive_tool_keeps_import_working_with_generic_icon(self):
+        archive=self.bundled_image(icon=self.png())
+        with patch.object(b.shutil,'which',return_value=None):
+            b.apply(b.plan(b.inspect_local(str(archive)),'install'))
+        self.assertEqual(b.appimage_items()[0]['icon'],'application-x-executable')
+
 if __name__=='__main__':unittest.main()
