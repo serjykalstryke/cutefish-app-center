@@ -25,6 +25,7 @@ import struct
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -180,52 +181,192 @@ def dpkg_installed():
     return items
 
 
-def appstream():
-    """Read distribution metadata if present; fall back to honest package search."""
-    result = {}
-    paths = []
-    for directory in ("/var/lib/swcatalog/xml", "/var/cache/swcatalog/xml", "/var/cache/app-info/xmls"):
-        paths += list(Path(directory).glob("*.xml*"))
-    for path in paths:
+def search_text(value):
+    return " ".join(re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", value).casefold()))
+
+
+# These are vocabulary/category mappings, not lists of preferred applications.
+# Available applications and their identities always come from the providers.
+SEARCH_CATEGORIES = (
+    (("browser", "browsers", "web browser", "web browsers", "internet browser", "internet browsers"),
+     ("WebBrowser",), "browser", ("web browser", "internet browser", "browse the web", "browse the world wide web", "access the internet", "browse faster")),
+    (("image editor", "image editors", "photo editor", "photo editors", "picture editor", "picture editors"),
+     ("ImageProcessing", "RasterGraphics", "VectorGraphics"), "image", ("image editor", "photo editor", "graphics editor", "image editing", "photo editing", "image manipulation")),
+    (("text editor", "text editors"), ("TextEditor",), "text editor", ("text editor", "text editing")),
+    (("video player", "video players", "media player", "media players"),
+     ("Player",), "media player", ("video player", "media player", "play video")),
+    (("music player", "music players", "audio player", "audio players"),
+     ("Player",), "music player", ("music player", "audio player", "play music")),
+    (("development", "ide", "ides", "code editor", "code editors", "programming editor", "programming editors"),
+     ("IDE",), "code editor", ("code editor", "development environment", "programming editor")),
+)
+
+
+def search_intent(query):
+    normalized = search_text(query)
+    return next((entry for entry in SEARCH_CATEGORIES if normalized in entry[0]), None)
+
+
+def search_lookup(query):
+    intent = search_intent(query)
+    return intent[2] if intent else query
+
+
+def search_score(item, query):
+    """Exact names/IDs, then app categories, names/keywords and short summaries.
+
+    Long descriptions help ordinary searches, but never establish category
+    membership: an editor mentioning a browser should not become a browser.
+    """
+    normalized = search_text(query)
+    if not normalized:
+        return 0
+    name = search_text(item.get("name", ""))
+    identities = [item.get("id", ""), item.get("app_id", "")]
+    if normalized == name or any(query.casefold() == x.casefold() for x in identities if x):
+        return 1000 + (5 if item.get("installed") else 0) - (15 if item.get("catalog") else 0)
+    words = normalized.split()
+    def matches(text):
+        return all(word in text for word in words)
+    summary = search_text(item.get("summary", ""))
+    keywords = search_text(" ".join(item.get("keywords", [])))
+    identity = search_text(" ".join(identities))
+    description = search_text(item.get("description", ""))
+    score = (800 if name.startswith(normalized) else 750 if matches(name) else
+             700 if matches(identity) else 650 if matches(keywords) else
+             500 if matches(summary) else 350 if matches(" ".join((name, summary, keywords))) else
+             200 if matches(description) else 0)
+    helper = bool(re.search(r"\b(librar(?:y|ies)|development files|debug symbols|language pack|locali[sz]ation|bindings|plugins?|extensions?|transitional package|module|support for|handling support|integration|connector|wrapper|sandbox|webdriver|headless|daemon|minimal shell)\b", summary))
+    helper |= bool(re.search(r"(?:-l10n(?:-|$)|-locale(?:-|$)|-(?:dev|doc|dbg|dbgsym|common|data|config|plugins|utils)$|^(?:webext-|elpa-|node-|python[0-9]?-|ruby-|php-|golang-|gir[0-9]|libjs-|lib.*-perl$))", item.get("id", "")))
+    intent = search_intent(query)
+    if intent:
+        categories = set(item.get("categories", []))
+        category_match = bool(categories.intersection(intent[1]))
+        # The Player category is shared by audio and video applications.
+        if intent[2] == "music player" and "Video" in categories and "Audio" not in categories:
+            category_match = False
+        purpose = any(phrase in " ".join((name, summary)) for phrase in intent[3])
+        if intent[2] == "image" and categories.intersection(("Viewer", "Game", "Office", "Scanning")) and not purpose:
+            category_match = False
+        if intent[2] == "browser" and not category_match and re.search(r"\b(?:(?:for|in|of|with|using|to) (?:your |the |a )?web browsers?|irc client|web server)\b", summary):
+            purpose = False
+        if not (category_match or purpose) or (helper and not item.get("desktop_app")):
+            return 0
+        confidence = 30 if category_match and item.get("desktop_app") else 0
+        if purpose or "x-scheme-handler/https" in item.get("mediatypes", []):
+            confidence += 10
+        score = max(score, 850 + confidence)
+        # Browser launchers, bookmark tools, etc. can share WebBrowser metadata.
+        if re.search(r"\b(launcher|bookmark|downloader|manager|torrent|installer)\b", name + " " + summary):
+            score -= 200
+        if re.search(r"\b(text mode|text based|terminal based|non graphical|framebuffer)\b", summary):
+            score -= 100
+    elif helper and not item.get("desktop_app"):
+        score = max(1, score - 300) if score else 0
+    if not score:
+        return 0
+    if re.search(r"\b(nightly|beta|unstable|canary|development build)\b", name):
+        score -= 40
+    if item.get("catalog"):
+        score -= 15
+    return score + (5 if item.get("installed") else 0)
+
+
+def ranked_search(items, query, limit=LIMIT):
+    scored = [(search_score(item, query), item) for item in items]
+    scored = [(score, item) for score, item in scored if score > 0]
+    scored.sort(key=lambda pair: (-pair[0], search_text(pair[1]["name"]),
+                pair[1]["source"], pair[1].get("scope", ""), pair[1].get("remote", ""),
+                pair[1].get("branch", ""), pair[1].get("arch", ""), pair[1]["id"]))
+    return [item for _, item in scored[:limit]]
+
+
+def appstream_components(paths):
+    """Read desktop application metadata only. Never load add-ons as apps."""
+    result = []
+    for path in sorted(set(paths)):
         try:
             opener = gzip.open if path.suffix == ".gz" else open
             with opener(path, "rb") as f:
                 for _, node in ET.iterparse(f, events=("end",)):
                     if node.tag != "component":
                         continue
-                    if node.get("type") == "desktop-application":
-                        pkg = node.findtext("pkgname")
-                        if pkg and PACKAGE.fullmatch(pkg):
-                            def plain(tag):
-                                elements = node.findall(tag)
-                                return next((e.text for e in elements if not e.attrib and e.text), "")
-                            icon = next((e.text for e in node.findall("icon") if e.get("type") == "stock"), "application-x-deb")
-                            result[pkg] = {"name": plain("name") or pkg,
-                                           "summary": plain("summary"), "icon": icon,
-                                           "app_id": node.findtext("id", "")}
+                    if node.get("type") in ("desktop-application", "desktop"):
+                        def plain(tag):
+                            elements = node.findall(tag)
+                            return next((e for e in elements if not e.attrib or set(e.attrib) == {"type"}), None)
+                        def text(tag):
+                            element = plain(tag)
+                            return " ".join(element.itertext()).strip() if element is not None else ""
+                        result.append(dict(name=text("name"), summary=text("summary"),
+                            description=text("description")[:4000], app_id=node.findtext("id", ""),
+                            pkgname=node.findtext("pkgname", ""),
+                            flatpak_ref=next((e.text for e in node.findall("bundle") if e.get("type") == "flatpak"), ""),
+                            version=next((e.get("version", "") for e in node.findall("releases/release")), ""),
+                            categories=[e.text for e in node.findall("categories/category") if e.text],
+                            keywords=[e.text for group in node.findall("keywords") if not group.attrib
+                                      for e in group.findall("keyword") if e.text and not e.attrib],
+                            mediatypes=[e.text for e in node.findall("provides/mediatype") if e.text],
+                            desktop_app=True,
+                            icon=next((e.text for e in node.findall("icon") if e.get("type") == "stock" and e.text), "application-x-executable")))
                     node.clear()
         except (OSError, ET.ParseError):
             continue
     return result
 
 
+def appstream():
+    """Read distribution metadata if present; APT summaries remain a fallback."""
+    paths = []
+    for directory in ("/var/lib/swcatalog/xml", "/var/cache/swcatalog/xml", "/var/cache/app-info/xmls"):
+        paths += list(Path(directory).glob("*.xml*"))
+    return {item["pkgname"]: {k: v for k, v in item.items() if k not in ("pkgname", "flatpak_ref", "version")}
+            for item in appstream_components(paths)
+            if PACKAGE.fullmatch(item["pkgname"])}
+
+
+def flatpak_appstream(scope, arch):
+    root = (Path(os.environ.get("FLATPAK_USER_DIR", data_home() / "flatpak")) if scope == "user"
+            else Path(os.environ.get("FLATPAK_SYSTEM_DIR", "/var/lib/flatpak")))
+    result = {}
+    for directory in (root / "appstream").glob("*/" + arch + "/active"):
+        path = directory / "appstream.xml"
+        if not path.is_file():
+            path = directory / "appstream.xml.gz"
+        remote = directory.parent.parent.name
+        for item in appstream_components([path]):
+            parts = item["flatpak_ref"].split("/")
+            if len(parts) == 4 and parts[0] == "app" and parts[2] == arch:
+                result[(parts[1], arch, parts[3], remote)] = item
+    return result
+
+
 def deb_search(query):
     if len(query) < 2:
         return []
-    # apt-cache search treats its argument as a regular expression.
-    out = run(["apt-cache", "search", "--names-only", "--", re.escape(query)], timeout=30)
+    # Search summaries as well as names; escape each literal term for APT's regex.
+    out = run(["apt-cache", "search", "--"] + [re.escape(w) for w in search_lookup(query).split()], timeout=30)
     installed = {x["id"].split(":")[0]: x for x in dpkg_installed()}
     metadata = appstream()
-    items = []
-    for line in out.splitlines()[:LIMIT]:
+    candidates = {}
+    for line in out.splitlines():
         name, sep, summary = line.partition(" - ")
         if not sep or not PACKAGE.fullmatch(name):
             continue
+        candidates[name] = summary
+    # Category/name/keyword matches need not occur in a Debian package name or
+    # its short summary. Join them to packages actually offered by this system.
+    matches = {pkg for pkg, meta in metadata.items() if search_score(dict(meta, id=pkg), query)}
+    if matches:
+        available = set(run(["apt-cache", "pkgnames"]).splitlines())
+        candidates.update({pkg: metadata[pkg]["summary"] for pkg in matches & available})
+    items = []
+    for name, summary in candidates.items():
         item = dict(source="deb", id=name, name=name, summary=summary, scope="system",
                     installed=name in installed, version=installed.get(name, {}).get("version", ""), icon="application-x-deb")
-        item.update(metadata.get(name, {}))
+        item.update({k: v for k, v in metadata.get(name, {}).items() if v or k != "version"})
         items.append(item)
-    return items
+    return ranked_search(items, query)
 
 class SnapHTTP(http.client.HTTPConnection):
     def connect(self):
@@ -256,18 +397,21 @@ def snap_api(path, body=None):
 
 def snap_items(query=None, updates=False):
     if query is not None:
-        path = "/v2/find?" + urllib.parse.urlencode({"q": query})
+        path = "/v2/find?" + urllib.parse.urlencode({"q": search_lookup(query)})
     elif updates:
         path = "/v2/find?select=refresh"
     else:
         path = "/v2/snaps"
     data = snap_api(path)["result"]
     installed = {x["name"] for x in snap_api("/v2/snaps")["result"]} if query is not None or updates else set()
-    return [dict(source="snap", id=x["name"], name=x.get("title") or x["name"],
+    items = [dict(source="snap", id=x["name"], name=x.get("title") or x["name"],
                  summary=x.get("summary", ""), version=x.get("version", ""),
+                 description=x.get("description", "")[:4000],
                  installed=x["name"] in installed or (query is None and not updates),
                  scope="system", channel=x.get("channel", "stable"),
-                 confinement=x.get("confinement", "strict"), icon="application-x-executable") for x in data[:LIMIT]]
+                 confinement=x.get("confinement", "strict"), icon="application-x-executable")
+             for x in data if query is None or x.get("type", "app") == "app"]
+    return ranked_search(items, query) if query is not None else items[:LIMIT]
 
 
 def flatpak_items(query=None, updates=False):
@@ -276,7 +420,7 @@ def flatpak_items(query=None, updates=False):
     items = []
     for scope in ("user", "system"):
         if query is not None:
-            args = ["search", "--columns=application,name,description,version,branch,remotes", "--", query]
+            args = ["search", "--columns=application,name,description,version,branch,remotes", "--", search_lookup(query)]
         elif updates:
             args = ["remote-ls", "--updates", "--app", "--columns=application,name,description,version,branch,origin,arch"]
         else:
@@ -284,6 +428,8 @@ def flatpak_items(query=None, updates=False):
         out = run(["flatpak", "--" + scope] + args, timeout=90)
         installed = set()
         native_arch = ""
+        metadata = {}
+        scope_items = {}
         if query is not None:
             native_arch = run(["flatpak", "--default-arch"]).strip()
             installed = {tuple(line.split("\t")) for line in run(["flatpak", "--" + scope, "list", "--app", "--columns=application,branch,origin,arch"]).splitlines()}
@@ -292,6 +438,7 @@ def flatpak_items(query=None, updates=False):
             app_refs = {tuple(line.split("\t")) for line in run([
                 "flatpak", "--" + scope, "remote-ls", "--app", "--cached",
                 "--columns=application,arch,branch,origin"]).splitlines()}
+            metadata = flatpak_appstream(scope, native_arch)
         for line in out.splitlines():
             cols = line.split("\t")
             if len(cols) < 6 or not APPID.fullmatch(cols[0]):
@@ -304,11 +451,26 @@ def flatpak_items(query=None, updates=False):
                     continue
                 if query is not None and (appid, native_arch, branch, remote) not in app_refs:
                     continue
-                items.append(dict(source="flatpak", id=appid, name=name, summary=summary,
+                item = dict(source="flatpak", id=appid, name=name, summary=summary,
                                   version=version, branch=branch, remote=remote, scope=scope,
                                   arch=cols[6] if len(cols) > 6 else native_arch,
-                                  installed=query is None or (appid, branch, remote, native_arch) in installed, icon="application-x-executable"))
-    return items[:LIMIT]
+                                  installed=query is None or (appid, branch, remote, native_arch) in installed, icon="application-x-executable")
+                key = (appid, item["arch"], branch, remote)
+                # Keep CLI display/version fields; supplement with search metadata.
+                item.update({k: v for k, v in metadata.get(key, {}).items()
+                             if k not in ("name", "summary", "version")})
+                scope_items[key] = item
+        if query is not None:
+            for key, meta in metadata.items():
+                if key in scope_items or key not in app_refs:
+                    continue
+                appid, arch, branch, remote = key
+                item = dict(meta, source="flatpak", id=appid, scope=scope, remote=remote,
+                            arch=arch, branch=branch, installed=(appid, branch, remote, arch) in installed)
+                if search_score(item, query):
+                    scope_items[key] = item
+        items.extend(scope_items.values())
+    return ranked_search(items, query) if query is not None else items[:LIMIT]
 
 
 def flatpak_permissions(metadata):
@@ -341,7 +503,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishStore/0.1.2"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishStore/0.1.3"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -367,7 +529,6 @@ def appimage_feed():
 
 
 def appimage_catalog(query):
-    words = query.casefold().split()
     result = []
     for entry in appimage_feed():
         if not isinstance(entry, dict):
@@ -380,14 +541,12 @@ def appimage_catalog(query):
             description = ""
         summary = html.unescape(re.sub(r"<[^>]*>", " ", description))
         summary = " ".join(summary.split())
-        if not all(w in (name + " " + summary).casefold() for w in words):
-            continue
         result.append(dict(source="appimage", id=hashlib.sha256(name.encode()).hexdigest(),
                            name=name, summary=summary[:1500], scope="catalog", installed=False,
+                           categories=[x for x in (entry.get("categories") or []) if isinstance(x, str)],
                            catalog=True, icon="application-x-executable",
                            catalog_url="https://appimage.github.io/" + urllib.parse.quote(name, safe="") + "/"))
-    result.sort(key=lambda x: (not all(w in x["name"].casefold() for w in words), x["name"].casefold()))
-    return result[:LIMIT]
+    return ranked_search(result, query)
 
 
 def appimage_catalog_link(target):
@@ -872,7 +1031,7 @@ def inventory_provider(source, mode, query):
     if mode == "updates":
         return []
     if mode == "search":
-        local = [x for x in appimage_items() if query.casefold() in x["name"].casefold()]
+        local = ranked_search(appimage_items(), query)
         return local + appimage_catalog(query)
     return appimage_items()
 
@@ -896,12 +1055,14 @@ def listing(request):
                 items.extend(future.result())
             except Exception as e:
                 warnings.append(source + ": " + str(e))
-    items.sort(key=lambda x: (x["name"].casefold(), x["source"], x.get("scope", "")))
-    total = len(items)
+    if mode == "search":
+        items = ranked_search(items, query, limit=300 * len(sources))
+    else:
+        items.sort(key=lambda x: (x["name"].casefold(), x["source"], x.get("scope", "")))
     # Filtering installed packages is local and does not invoke a package solver.
     if mode == "installed" and query:
         items = [x for x in items if query.casefold() in (x["name"] + " " + x.get("summary", "")).casefold()]
-    return {"items": items[:300], "warnings": warnings, "total": total,
+    return {"items": items[:300], "warnings": sorted(warnings), "total": len(items),
             "message": "Showing up to 300 entries. Search to narrow the list." if len(items) > 300 else ""}
 
 
