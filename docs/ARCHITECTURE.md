@@ -36,3 +36,14 @@ Plans bind targets, operations, changes and permission notes with a fingerprint.
 
 
 AppImage metadata reads use the system's `unsquashfs` under `prlimit`, with output, memory, CPU and wall-time limits. Only display metadata is copied from the embedded desktop file; its Exec, actions, D-Bus activation and file associations are not imported. The generated launcher always runs the managed AppImage path. Unsupported/malformed icons fall back to the generic icon. Type-1 metadata and runtimes whose SquashFS payload starts beyond the first 16 MiB currently use that fallback.
+
+
+## Application details and launching
+
+A separate cancellable backend process reads app details on demand. Responses carry a selection generation so a completed request cannot replace a newer selection. Source/ref identity is retained when metadata enriches a record. AppStream XML supplies developer, license, HTTPS homepage, cached icons and screenshot metadata; APT supplies package descriptions/maintainers, Snap supplies its publisher/media fields, and AppImageHub supplies catalog artwork and separately labeled catalog authors. Missing metadata remains an explicit fallback.
+
+Artwork downloads accept public HTTPS URLs and validated image content, with byte/dimension bounds, bounded SVG decompression, timeouts and atomic cache writes. Existing cached images remain usable offline. Gallery images are decoded asynchronously by the native toolkit. No catalog Exec value becomes a launch command.
+
+Open rechecks installed state. Debian launchers come only from that package's application files; Snap launchers come from its exported desktop entries; imported AppImages use the generated managed launcher. These desktop entries launch through Gio. Flatpak uses its selected installation, architecture and branch after confirming its exact origin/ref is installed. Libraries, services and catalog-only listings have no Open action.
+
+The native Menu tree is registered through Application::setMainMenu, with Application/Help menu roles. The application menu belongs to the configured display name; the status bar owns its presentation. Window controls occupy the full-height sidebar, which has a square internal boundary; detail cards retain their own corner radius.

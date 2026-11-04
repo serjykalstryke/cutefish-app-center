@@ -59,3 +59,13 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
 - Live `web browsers` search on this system returned browser-focused results including Brave, Firefox, Chromium and Google Chrome. The former results included unrelated apps such as CouchDB and Ascii Patrol. Live searches for Firefox, image editors, text editors and media players also completed without provider errors; measured search completion was about 1.6–1.8 seconds with warm catalogs.
 - Built both native targets without compiler diagnostics. The extended headless integration test passed: real inventory/filter navigation, the Web browsers shortcut, ranked results, and Brave/Google Chrome/Firefox presence; chromium-sandbox was absent from browser discovery.
 - Search uses existing configured catalogs and read-only provider queries. No application install/removal, repository additions or metadata refresh was needed for these search checks. Catalog categorization remains dependent on publisher metadata; Debian YAML AppStream support is not included.
+
+## 0.1.4 app details and desktop integration
+
+- 27 backend, 15 search, 19 details/artwork/launch and 2 private PackageKit protocol tests passed (63 total).
+- Details tests cover English publisher metadata, full descriptions, icon/screenshot selection, offline artwork reuse, invalid artwork bounds, exact Flatpak origin/ref checks, package-owned launchers, managed AppImage launchers, Snap offline fallback and non-launchable catalog entries/services. A real Gio DesktopAppInfo launch runs only a private fixture that writes a temporary marker.
+- Built the app and both optional native test targets without compiler diagnostics. Assertions remain enabled for both smoke targets in Release builds.
+- Native inventory/search smoke passed with actual providers. The private native details test passed source switching, Open request dispatch, gallery navigation/enlargement, main-menu role registration and top-aligned sidebar geometry; its provider never launches software or changes packages.
+- The live native details test rendered actual Firefox metadata, Mozilla publisher information, cached icon and all three catalog screenshots. Live read-only checks also resolved Chromium's installed desktop launcher and fetched VLC's Snap publisher/media metadata.
+- An actual Cutefish session displayed the application-name menu and File, View, Software and Help entries in the universal top bar. The sidebar reaches the top of the window; its internal corner radius is zero in the final build.
+- Missing publisher fields and screenshots remain source-dependent. Imported AppImages do not gain screenshots unless a source provides them. No real application installation/removal or repository change was needed for these checks.
