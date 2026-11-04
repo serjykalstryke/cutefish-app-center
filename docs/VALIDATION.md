@@ -94,3 +94,25 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   `cutefish-app-center` 0.2.0 and needs no additional dependencies on this host.
   This simulation and the private transaction tests do not establish a real
   package upgrade or real-library migration; those require desktop validation.
+
+
+## 0.2.1 Debian artwork before installation
+
+- Added libappstream's OS-only catalog reader for XML/DEP-11 YAML, including
+  repository icon caches, names, categories and existing details metadata.
+  Flatpak components and installed desktop files are excluded from this pool.
+- 81 backend/protocol checks passed, including seven tests that load actual
+  DEP-11 fixtures through Debian 13's libappstream 1.0.5. They cover uninstalled
+  app icons without network requests, missing artwork, source/package identity,
+  unavailable package exclusion, details and PackageKit update identity.
+- Release build and the inventory/search, details and home native smoke tests
+  passed. The installed UI was inspected showing Debian category results with
+  repository artwork for applications that were not installed.
+- Installed App Center 0.2.1 with appstream, apt-config-icons and the AppStream
+  introspection bindings, then refreshed APT metadata. No applications were
+  installed to obtain their icons. The catalog reader found 1,871 desktop
+  package records in about 1.1 seconds on this machine.
+- Live Debian searches resolved existing cached PNG files for uninstalled GIMP,
+  Krita, Inkscape, Firefox ESR and Blender. Search does not fetch full packages
+  or remotely download each result's icon; normal APT refreshes maintain the
+  catalog and cache. Repositories without app metadata retain generic icons.

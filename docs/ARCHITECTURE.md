@@ -13,14 +13,14 @@ Source entries only merge when a shared AppStream identity is known. The package
 
 Search ranks candidates before applying provider and global limits. Exact names/IDs lead, then category matches and names, keywords, summaries and description text. A small vocabulary maps common browser/editor/player queries to AppStream categories; app names and availability come from providers, not a curated application list. Category searches require category or short-purpose evidence and exclude helper packages and incidental long-description matches. Installed/Updates retain their inventory ordering and local filtering.
 
-Flatpak search augments CLI results with desktop components from the existing per-scope, per-remote AppStream XML cache. Metadata candidates must join an exact available app ref (ID, architecture, branch, remote); each installation scope stays distinct. Legacy `desktop` components are accepted alongside `desktop-application`, while add-ons remain excluded. Debian optionally reads XML catalogs and falls back to APT names/summaries on minimal systems; AppStream YAML support is still a future milestone.
+Flatpak search augments CLI results with desktop components from the existing per-scope, per-remote AppStream XML cache. Metadata candidates must join an exact available app ref (ID, architecture, branch, remote); each installation scope stays distinct. Legacy `desktop` components are accepted alongside `desktop-application`, while add-ons remain excluded. Debian reads OS-only XML/DEP-11 catalogs with libappstream, resolves repository-cached icons before installation, and falls back to APT names/summaries on minimal systems. Its pool excludes Flatpak and local desktop-file sources; metadata never changes the Debian transaction identity. The appstream and apt-config-icons packages let normal APT refreshes maintain that catalog and icon cache.
 
 Plans bind targets, operations, changes and permission notes with a fingerprint. Applying a plan recomputes it and rejects a mismatch. This guards stale UI state; it is not an authorization token. Polkit/package services enforce authorization independently. A per-user advisory lock prevents App Center from starting simultaneous modifications. Other package tools can still operate; package-manager locks remain authoritative.
 
 ## Next engineering milestones
 
 1. Disposable Debian/Flatpak/Snap transaction tests: install, upgrade, remove, missing dependencies, package lock contention, failed downloads, authentication denial, held packages and restart requirements.
-2. Add AppStream YAML/libappstream support, app-only browsing, reliable cross-source identity mapping and installed-app launching through the Cutefish application registry.
+2. Improve app-only browsing and reliable cross-source identity mapping.
 3. Replace CLI Flatpak transactions with libflatpak for complete dependency/permission previews, structured progress, cancellation and robust EULA handling.
 4. Add persistent transaction records, source settings and AppImage direct-download support with signature/hash verification and publisher update metadata.
 5. Integrate localization, accessibility review, keyboard/focus testing and CI against a pinned toolkit version.
