@@ -8,7 +8,7 @@ import tempfile
 
 parser=argparse.ArgumentParser()
 parser.add_argument('binary',type=Path)
-parser.add_argument('--output',type=Path,default=Path('cutefish-store_0.1.3_amd64.deb'))
+parser.add_argument('--output',type=Path,default=Path('cutefish-store_0.1.4_amd64.deb'))
 args=parser.parse_args()
 source=Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='cutefish-store-package-') as temp:
@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix='cutefish-store-package-') as temp:
  size=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())//1024
  (root/'DEBIAN').mkdir()
  (root/'DEBIAN/control').write_text(f'''Package: cutefish-store
-Version: 0.1.3
+Version: 0.1.4
 Architecture: amd64
 Maintainer: Cutefish Store contributors
 Section: admin
