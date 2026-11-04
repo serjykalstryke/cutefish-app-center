@@ -9,6 +9,8 @@ import concurrent.futures
 import contextlib
 import configparser
 import html
+from html.parser import HTMLParser
+import ipaddress
 import fcntl
 import gzip
 import hashlib
@@ -281,6 +283,74 @@ def ranked_search(items, query, limit=LIMIT):
     return [item for _, item in scored[:limit]]
 
 
+class PlainDescription(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden = 0
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self.hidden += 1
+        if not self.hidden and tag in ("p", "div", "br", "li", "ul", "ol"):
+            self.parts.append("\n" + ("• " if tag == "li" else ""))
+    def handle_endtag(self, tag):
+        if tag in ("script", "style"):
+            self.hidden = max(0, self.hidden - 1)
+        if not self.hidden and tag in ("p", "div", "li"):
+            self.parts.append("\n")
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def description_text(value):
+    parser = PlainDescription()
+    parser.feed(value[:60000])
+    text = "".join(parser.parts)
+    text = re.sub(r"\[([^\]\n]+)\]\(https?://[^)]+\)", r"\1", text)
+    text = re.sub(r"(?m)^\s*#{1,6}\s+", "", text).replace("**", "").replace("__", "")
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n\n".join(line for line in lines if line)[:12000]
+
+
+def component_text(node, tag):
+    elements = node.findall(tag)
+    english = (None, "en", "en-US", "en_GB", "en-GB")
+    for language in english:
+        for element in elements:
+            if element.get("{http://www.w3.org/XML/1998/namespace}lang") == language:
+                return " ".join(element.itertext()).strip()
+    return ""
+
+
+def component_artwork(node, path):
+    result = {}
+    for icon in node.findall("icon"):
+        name = icon.text or ""
+        if icon.get("type") == "cached" and PurePosixPath(name).name == name:
+            for resolution in ("128x128", "64x64", "48x48"):
+                candidate = path.parent / "icons" / resolution / name
+                if candidate.is_file():
+                    result["icon"] = str(candidate)
+                    break
+        if icon.get("type") == "remote" and name.startswith("https://"):
+            result["icon_url"] = name
+    shots = []
+    for shot in sorted(node.findall("screenshots/screenshot"), key=lambda e: e.get("type") != "default"):
+        images = [image for image in shot.findall("image") if (image.text or "").startswith("https://")]
+        # Prefer a medium thumbnail over a multi-megabyte original image.
+        def image_size(image):
+            try:
+                return abs(int(image.get("width", "100000")) - 752)
+            except ValueError:
+                return 100000
+        if images:
+            chosen = min(images, key=image_size)
+            shots.append(dict(url=chosen.text, caption=component_text(shot, "caption")[:500]))
+    result["screenshot_urls"] = shots[:3]
+    return result
+
+
 def appstream_components(paths):
     """Read desktop application metadata only. Never load add-ons as apps."""
     result = []
@@ -292,14 +362,16 @@ def appstream_components(paths):
                     if node.tag != "component":
                         continue
                     if node.get("type") in ("desktop-application", "desktop"):
-                        def plain(tag):
-                            elements = node.findall(tag)
-                            return next((e for e in elements if not e.attrib or set(e.attrib) == {"type"}), None)
                         def text(tag):
-                            element = plain(tag)
-                            return " ".join(element.itertext()).strip() if element is not None else ""
+                            return component_text(node, tag)
+                        descriptions = [e for e in node.findall("description") if not e.attrib]
+                        description = description_text(ET.tostring(descriptions[0], encoding="unicode")) if descriptions else ""
                         result.append(dict(name=text("name"), summary=text("summary"),
-                            description=text("description")[:4000], app_id=node.findtext("id", ""),
+                            description=description, app_id=node.findtext("id", ""),
+                            publisher=text("developer/name") or text("developer_name"),
+                            license=node.findtext("project_license", ""),
+                            homepage=next((e.text for e in node.findall("url") if e.get("type") == "homepage"), ""),
+                            desktop_ids=[e.text for e in node.findall("launchable") if e.get("type") == "desktop-id" and e.text],
                             pkgname=node.findtext("pkgname", ""),
                             flatpak_ref=next((e.text for e in node.findall("bundle") if e.get("type") == "flatpak"), ""),
                             version=next((e.get("version", "") for e in node.findall("releases/release")), ""),
@@ -309,6 +381,7 @@ def appstream_components(paths):
                             mediatypes=[e.text for e in node.findall("provides/mediatype") if e.text],
                             desktop_app=True,
                             icon=next((e.text for e in node.findall("icon") if e.get("type") == "stock" and e.text), "application-x-executable")))
+                        result[-1].update(component_artwork(node, path))
                     node.clear()
         except (OSError, ET.ParseError):
             continue
@@ -503,7 +576,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishStore/0.1.3"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishStore/0.1.4"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -1066,8 +1139,350 @@ def listing(request):
             "message": "Showing up to 300 entries. Search to narrow the list." if len(items) > 300 else ""}
 
 
+# Details are read-only. Only launch_installed starts an application, after a
+# fresh installation/launcher check; no command from a catalog is executed.
+def cache_home():
+    return Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'cutefish-store'
+
+
+def public_https(url, resolve=False):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+                or parsed.port not in (None, 443) or any(ord(c) < 33 for c in url)):
+            return False
+        host = parsed.hostname.rstrip('.').lower()
+        if host == 'localhost' or host.endswith(('.localhost', '.local')):
+            return False
+        try:
+            if not ipaddress.ip_address(host).is_global:
+                return False
+        except ValueError:
+            if resolve:
+                addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+                if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
+                    return False
+        return True
+    except (ValueError, OSError, TypeError):
+        return False
+
+
+class ArtworkRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not public_https(newurl, resolve=True):
+            raise StoreError('The artwork URL is not a public HTTPS address.')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def artwork_format(raw):
+    basic = icon_format(raw)
+    if basic:
+        return basic
+    # JPEG dimensions are in a Start Of Frame segment; never decode to inspect.
+    if raw.startswith(b'\xff\xd8'):
+        offset = 2
+        while offset + 4 <= len(raw):
+            if raw[offset] != 255:
+                break
+            marker = raw[offset + 1]
+            offset += 2
+            if marker in (0xD8, 0xD9) or marker == 0:
+                continue
+            length = int.from_bytes(raw[offset:offset + 2], 'big')
+            if length < 2 or offset + length > len(raw):
+                break
+            if marker in (0xC0, 0xC1, 0xC2) and length >= 7:
+                height, width = struct.unpack_from('>HH', raw, offset + 3)
+                return 'jpg' if 0 < width <= 4096 and 0 < height <= 4096 else None
+            offset += length
+    if raw[:4] == b'RIFF' and raw[8:12] == b'WEBP' and len(raw) >= 30:
+        width = height = 0
+        if raw[12:16] == b'VP8X':
+            width = int.from_bytes(raw[24:27], 'little') + 1
+            height = int.from_bytes(raw[27:30], 'little') + 1
+        elif raw[12:16] == b'VP8 ' and raw[23:26] == b'\x9d\x01\x2a':
+            width, height = (v & 0x3fff for v in struct.unpack_from('<HH', raw, 26))
+        elif raw[12:16] == b'VP8L' and raw[20] == 0x2f:
+            bits = int.from_bytes(raw[21:25], 'little')
+            width, height = (bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1
+        return 'webp' if 0 < width <= 4096 and 0 < height <= 4096 else None
+    return None
+
+
+def cached_artwork(url):
+    if not public_https(url):
+        return ''
+    directory = cache_home() / 'artwork'
+    key = hashlib.sha256(url.encode()).hexdigest()
+    # Extensions are fixed by validated content, never by a URL filename.
+    stale = ''
+    for suffix in ('png', 'jpg', 'webp', 'svg'):
+        path = directory / (key + '.' + suffix)
+        try:
+            if path.is_file() and not path.is_symlink():
+                stale = str(path)
+                if time.time() - path.stat().st_mtime < 7 * 86400:
+                    return str(path)
+        except OSError:
+            pass
+    if not public_https(url, resolve=True):
+        return stale
+    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishStore/0.1.4'})
+    try:
+        with urllib.request.build_opener(ArtworkRedirect()).open(request, timeout=6) as response:
+            raw = response.read(6 * 1024 * 1024 + 1)
+    except (OSError, ValueError, StoreError):
+        return stale
+    if len(raw) > 6 * 1024 * 1024:
+        return stale
+    if raw.startswith(b'\x1f\x8b'):
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
+                raw = compressed.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024 or icon_format(raw) != 'svg':
+                return stale
+        except (OSError, EOFError, ValueError):
+            return stale
+    suffix = artwork_format(raw)
+    if not suffix:
+        return stale
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / (key + '.' + suffix)
+    fd, temporary = tempfile.mkstemp(dir=directory, prefix='.artwork-')
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write(raw)
+        os.replace(temporary, destination)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return str(destination)
+
+
+def detail_artwork(item, metadata):
+    item['screenshots'] = []
+    jobs = []
+    if metadata.get('icon_url'):
+        jobs.append(('icon', metadata['icon_url'], ''))
+    for shot in metadata.get('screenshot_urls', [])[:3]:
+        jobs.append(('screenshot', shot['url'], shot.get('caption', '')))
+    if not jobs:
+        return
+    # Preserve gallery order even if downloads finish in a different order.
+    def load(job):
+        try:
+            return cached_artwork(job[1])
+        except (OSError, ValueError, StoreError):
+            return ''
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        for job, path in zip(jobs, executor.map(load, jobs)):
+            if path and job[0] == 'icon':
+                item['icon'] = path
+            elif path:
+                item['screenshots'].append(dict(path=path, caption=job[2]))
+    if any(job[0] == 'screenshot' for job in jobs) and not item['screenshots']:
+        item['artwork_note'] = 'Screenshots are unavailable right now.'
+
+
+def deb_fields(text):
+    result, key = {}, ''
+    for line in text.splitlines():
+        if line.startswith((' ', '\t')) and key:
+            result[key] += '\n' + ('' if line.strip() == '.' else line[1:])
+        elif ': ' in line:
+            key, value = line.split(': ', 1)
+            result[key] = value
+        elif not line:
+            break
+    return result
+
+
+def deb_installed(ident):
+    try:
+        value = run(['dpkg-query', '--show', '--showformat=${db:Status-Status}\t${Version}\n', '--', ident]).strip().split('\t')
+        return value[1] if len(value) == 2 and value[0] == 'installed' else ''
+    except StoreError:
+        return ''
+
+
+def visible_desktop(path):
+    try:
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.read(path, encoding='utf-8')
+        entry = parser['Desktop Entry']
+        if (entry.get('Type') != 'Application' or entry.get('Hidden', '').lower() == 'true'
+                or entry.get('NoDisplay', '').lower() == 'true' or not entry.get('Name')
+                or not (entry.get('Exec') or entry.get('DBusActivatable', '').lower() == 'true')):
+            return False
+        return True
+    except (OSError, KeyError, configparser.Error, UnicodeError):
+        return False
+
+
+def flatpak_installed(target):
+    arch = target.get('arch') or run(['flatpak', '--default-arch']).strip()
+    text = run(['flatpak', '--' + target['scope'], 'list', '--app', '--columns=application,branch,origin,arch,version'])
+    for line in text.splitlines():
+        fields = line.split('\t')
+        if len(fields) >= 4 and tuple(fields[:4]) == (target['id'], target['branch'], target['remote'], arch):
+            return dict(arch=arch, version=fields[4] if len(fields) > 4 else '')
+    return None
+
+
+def launch_spec(target):
+    validate_target(target)
+    source, ident = target['source'], target['id']
+    if target.get('catalog'):
+        return None
+    if source == 'flatpak':
+        installed = flatpak_installed(target)
+        return dict(kind='flatpak', **installed) if installed is not None else None
+    if source == 'deb':
+        if target.get('path') or not deb_installed(ident):
+            return None
+        files = run(['dpkg-query', '--listfiles', '--', ident]).splitlines()
+        candidates = sorted(p for p in files if p.startswith('/usr/share/applications/') and p.endswith('.desktop'))
+    elif source == 'snap':
+        try:
+            installed = snap_api('/v2/snaps/' + urllib.parse.quote(ident, safe=''))['result']
+        except StoreError:
+            return None
+        if installed.get('status') not in ('active', 'installed'):
+            return None
+        candidates = sorted(str(p) for p in Path('/var/lib/snapd/desktop/applications').glob(ident + '_*.desktop'))
+    else:
+        if not re.fullmatch(r'[a-f0-9]{64}', ident):
+            return None
+        image = state_dir() / 'appimages' / ident / 'application.AppImage'
+        if not image.is_file() or image.is_symlink():
+            return None
+        candidates = [str(data_home() / 'applications' / ('org.cutefish.Store.AppImage-' + ident + '.desktop'))]
+    candidates = [p for p in candidates if visible_desktop(p)]
+    return dict(kind='desktop', path=candidates[0]) if candidates else None
+
+
+def launch_desktop(path):
+    from gi.repository import Gio
+    entry = Gio.DesktopAppInfo.new_from_filename(path)
+    if entry is None or not entry.launch([], None):
+        raise StoreError('The application launcher could not be started.')
+
+
+def launch_installed(target):
+    spec = launch_spec(target)
+    if spec is None:
+        raise StoreError('This installation has no available application launcher. Reload the store and try again.')
+    if spec['kind'] == 'flatpak':
+        subprocess.Popen(['flatpak', '--' + target['scope'], 'run', '--arch=' + spec['arch'],
+                          '--branch=' + target['branch'], target['id']], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        launch_desktop(spec['path'])
+    return {'message': 'Launch requested.'}
+
+
+def app_details(target, artwork=True):
+    validate_target(target)
+    item = dict(target)
+    # Display data is re-read from the selected source, never used as launch
+    # instructions or as caller-supplied remote artwork URLs.
+    for key in ('screenshots', 'icon_url', 'screenshot_urls', 'can_open', 'homepage', 'publisher', 'license', 'publisher_verified'):
+        item.pop(key, None)
+    metadata = {}
+    source, ident = target['source'], target['id']
+    warnings = []
+    if source == 'deb':
+        if target.get('path'):
+            fields = deb_fields(run(['dpkg-deb', '--field', target['path']]))
+        else:
+            fields = deb_fields(run(['apt-cache', 'show', '--no-all-versions', '--', ident]))
+        metadata = appstream().get(ident.split(':')[0], {})
+        description = fields.get('Description-en', fields.get('Description', ''))
+        summary, _, body = description.partition('\n')
+        item.update(summary=summary or item.get('summary', ''), description=body or summary,
+                    version=fields.get('Version', item.get('version', '')), maintainer=fields.get('Maintainer', ''),
+                    homepage=fields.get('Homepage', ''), architecture=fields.get('Architecture', ''))
+        item.update({k: v for k, v in metadata.items() if v})
+        installed_version = deb_installed(ident) if not target.get('path') else ''
+        item.update(installed=bool(installed_version), installed_version=installed_version)
+    elif source == 'flatpak':
+        arch = target.get('arch') or run(['flatpak', '--default-arch']).strip()
+        metadata = flatpak_appstream(target['scope'], arch).get((ident, arch, target['branch'], target['remote']), {})
+        item.update({k: v for k, v in metadata.items() if v})
+        installed = flatpak_installed(dict(target, arch=arch))
+        item.update(installed=installed is not None, installed_version=installed['version'] if installed else '', arch=arch)
+        if not metadata:
+            warnings.append('The local catalog has no additional details for this app.')
+    elif source == 'snap':
+        installed = None
+        try:
+            installed = snap_api('/v2/snaps/' + urllib.parse.quote(ident, safe=''))['result']
+        except StoreError:
+            pass
+        try:
+            records = snap_api('/v2/find?' + urllib.parse.urlencode({'name': ident}))['result']
+            info = next((r for r in records if r.get('name') == ident), installed or {})
+        except StoreError:
+            info = installed or {}
+            warnings.append('Store details are unavailable; showing installed information.')
+        publisher = info.get('publisher') or {}
+        media = info.get('media') or []
+        metadata = dict(icon_url=next((m['url'] for m in media if m.get('type') == 'icon' and m.get('url')), info.get('icon', '')),
+                        screenshot_urls=[dict(url=m['url'], caption='') for m in media if m.get('type') == 'screenshot' and m.get('url')][:3])
+        item.update(name=info.get('title') or info.get('name') or item.get('name', ident), summary=info.get('summary', ''),
+                    description=description_text(info.get('description', '')), version=info.get('version', ''),
+                    publisher=publisher.get('display-name') or publisher.get('username', ''),
+                    publisher_verified=publisher.get('validation') == 'verified', license=info.get('license', ''),
+                    homepage=info.get('website', ''), installed=bool(installed),
+                    installed_version=(installed or {}).get('version', ''), confinement=info.get('confinement', 'strict'))
+    elif target.get('catalog'):
+        entry = next((e for e in appimage_feed() if isinstance(e, dict) and isinstance(e.get('name'), str)
+                      and hashlib.sha256(e['name'].encode()).hexdigest() == ident), None)
+        if entry is None:
+            raise StoreError('This AppImage catalog entry is no longer available.')
+        base_url = 'https://appimage.github.io/'
+        icons = entry.get('icons') or []
+        shots = entry.get('screenshots') or []
+        metadata = dict(icon_url=urllib.parse.urljoin(base_url, icons[0]) if icons and isinstance(icons[0], str) else '',
+                        screenshot_urls=[dict(url=urllib.parse.urljoin(base_url, u), caption='') for u in shots if isinstance(u, str)][:3])
+        authors = [a.get('name', '') for a in entry.get('authors') or [] if isinstance(a, dict)]
+        item.update(name=entry['name'], description=description_text(entry.get('description') or ''),
+                    catalog_author=', '.join(a for a in authors if a), installed=False)
+    else:
+        records = [i for i in appimage_items() if i['id'] == ident]
+        if records:
+            item.update(records[0])
+            item['description'] = item.get('summary', '')
+        else:
+            # A file currently being reviewed is not installed or launchable.
+            item['installed'] = False
+            item['description'] = item.get('summary', '')
+    try:
+        launcher = launch_spec(item)
+        item['can_open'] = bool(launcher)
+        if launcher and launcher['kind'] == 'desktop':
+            desktop = configparser.ConfigParser(interpolation=None, strict=False)
+            desktop.read(launcher['path'], encoding='utf-8')
+            entry = desktop['Desktop Entry']
+            if source == 'deb' and not item.get('desktop_app'):
+                item['name'] = metadata_text(entry.get('Name', item.get('name', ident)))
+            if not item.get('icon') or item.get('icon', '').startswith('application-x-'):
+                item['icon'] = metadata_text(entry.get('Icon', 'application-x-executable'), 1024)
+    except (OSError, StoreError, KeyError, configparser.Error, UnicodeError):
+        item['can_open'] = False
+    if not public_https(item.get('homepage', '')):
+        item.pop('homepage', None)
+    if artwork:
+        detail_artwork(item, metadata)
+    item['details_loaded'] = True
+    return {'item': item, 'warnings': warnings}
+
+
 def dispatch(request):
     op = request.get("op")
+    if op == "details":
+        return app_details(request["target"])
+    if op == "launch":
+        return launch_installed(request["target"])
     if op == "list":
         return listing(request)
     if op == "refresh_appimage_metadata":
