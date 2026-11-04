@@ -50,3 +50,12 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
 - Added real SquashFS fixtures covering artwork import, internal/external symlinks, existing-import repair, oversized artwork, external SVG resources and missing tooling.
 - 27 backend tests and 2 private PackageKit protocol tests passed. The protocol tests were run in the Cutefish terminal. A fresh out-of-tree Release build with GCC 14.2.0 and the native headless integration test also passed.
 - README now starts with complete source-build instructions and local `.deb` creation; generated packages remain excluded from Git.
+
+## 0.1.3 search follow-up
+
+- 27 existing backend tests, 15 search regression tests and 2 private PackageKit protocol tests passed.
+- Search fixtures cover singular/plural category aliases, unfamiliar app names, exact app/package queries, helper filtering, ranking before limits, deterministic ordering, provider errors, AppImage discovery, and unchanged Installed/Updates ordering.
+- Flatpak metadata fixtures cover legacy `desktop` components, English fields, categories/keywords and exact available branch/architecture/remote/scope matching. Category candidates absent from available refs are excluded.
+- Live `web browsers` search on this system returned browser-focused results including Brave, Firefox, Chromium and Google Chrome. The former results included unrelated apps such as CouchDB and Ascii Patrol. Live searches for Firefox, image editors, text editors and media players also completed without provider errors; measured search completion was about 1.6–1.8 seconds with warm catalogs.
+- Built both native targets without compiler diagnostics. The extended headless integration test passed: real inventory/filter navigation, the Web browsers shortcut, ranked results, and Brave/Google Chrome/Firefox presence; chromium-sandbox was absent from browser discovery.
+- Search uses existing configured catalogs and read-only provider queries. No application install/removal, repository additions or metadata refresh was needed for these search checks. Catalog categorization remains dependent on publisher metadata; Debian YAML AppStream support is not included.

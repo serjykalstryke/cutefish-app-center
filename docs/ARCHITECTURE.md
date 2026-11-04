@@ -11,6 +11,10 @@ The backend has four providers:
 
 Source entries only merge when a shared AppStream identity is known. The package source, scope and ref remain attached to each variant throughout the UI.
 
+Search ranks candidates before applying provider and global limits. Exact names/IDs lead, then category matches and names, keywords, summaries and description text. A small vocabulary maps common browser/editor/player queries to AppStream categories; app names and availability come from providers, not a curated application list. Category searches require category or short-purpose evidence and exclude helper packages and incidental long-description matches. Installed/Updates retain their inventory ordering and local filtering.
+
+Flatpak search augments CLI results with desktop components from the existing per-scope, per-remote AppStream XML cache. Metadata candidates must join an exact available app ref (ID, architecture, branch, remote); each installation scope stays distinct. Legacy `desktop` components are accepted alongside `desktop-application`, while add-ons remain excluded. Debian optionally reads XML catalogs and falls back to APT names/summaries on minimal systems; AppStream YAML support is still a future milestone.
+
 Plans bind targets, operations, changes and permission notes with a fingerprint. Applying a plan recomputes it and rejects a mismatch. This guards stale UI state; it is not an authorization token. Polkit/package services enforce authorization independently. A per-user advisory lock prevents this store from starting simultaneous modifications. Other package tools can still operate; package-manager locks remain authoritative.
 
 ## Next engineering milestones
@@ -26,6 +30,7 @@ Plans bind targets, operations, changes and permission notes with a fingerprint.
 - [Cutefish toolkit](https://github.com/cutefishos/cutefish-toolkit)
 - [PackageKit transaction interface](https://www.freedesktop.org/software/PackageKit/doc/dbus-org.freedesktop.packagekit1.Transaction.html)
 - [Flatpak command reference](https://docs.flatpak.org/en/latest/flatpak-command-reference.html)
+- [AppStream catalog categories and keywords](https://www.freedesktop.org/software/appstream/docs/chap-CatalogData.html)
 - [snapd REST API](https://snapcraft.io/docs/snapd-api)
 - [AppImage updates](https://docs.appimage.org/packaging-guide/optional/updates.html)
 
