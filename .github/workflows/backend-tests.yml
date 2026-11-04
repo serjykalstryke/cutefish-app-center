@@ -18,5 +18,6 @@ jobs:
         run: |
           python3 tests/test_backend.py -v
           python3 tests/test_search.py -v
+          python3 tests/test_details.py -v
       - name: Private PackageKit protocol tests
         run: dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
