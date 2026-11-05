@@ -172,7 +172,7 @@ class PackageKit:
 
 
 def dpkg_installed():
-    out = run(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\t${db:Status-Status}\t${binary:Summary}\t${Essential}\t${Protected}\n"])
+    out = run(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\t${db:Status-Status}\t${binary:Summary}\t${Essential}\t${Protected}\t${Architecture}\n"])
     items = []
     for line in out.splitlines():
         cols = line.split("\t")
@@ -180,7 +180,7 @@ def dpkg_installed():
             name, version, _, summary, essential, protected = cols[:6]
             items.append(dict(source="deb", id=name, name=name, version=version,
                               summary=summary, installed=True, scope="system",
-                              protected=essential == "yes" or protected == "yes", icon="application-x-deb"))
+                              protected=essential == "yes" or protected == "yes", architecture=cols[6] if len(cols)>6 else name.partition(":")[2], icon="application-x-deb"))
     return items
 
 
@@ -547,7 +547,7 @@ def snap_api(path, body=None):
     finally:
         conn.close()
 
-def snap_items(query=None, updates=False):
+def snap_items(query=None, updates=False, limit=LIMIT):
     if query is not None:
         path = "/v2/find?" + urllib.parse.urlencode({"q": search_lookup(query)})
     elif updates:
@@ -562,9 +562,12 @@ def snap_items(query=None, updates=False):
                  description=x.get("description", "")[:4000],
                  installed=x["name"] in installed or (query is None and not updates),
                  scope="system", channel=x.get("channel", "stable"),
-                 confinement=x.get("confinement", "strict"), icon="application-x-executable")
+                 confinement=x.get("confinement", "strict"), snap_type=x.get("type", "app"), revision=str(x.get("revision", "")), icon="application-x-executable")
              for x in data if query is None or x.get("type", "app") == "app"]
-    items = ranked_search(items, query) if query is not None else items[:LIMIT]
+    items = ranked_search(items, query) if query is not None else items[:limit] if limit else items
+    for item in items:
+        item['installed_revision'] = str(installed_records.get(item['id'], {}).get('revision', ''))
+        item['installed_version'] = installed_records.get(item['id'], {}).get('version', '')
     records = {x['name']: x for x in data}
     return [catalog_icon(item, snap_artwork_locator(records[item['id']], installed_records.get(item['id']))) for item in items]
 
@@ -658,7 +661,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.2.3"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.3.0"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -806,6 +809,7 @@ def plan(target, action):
     changes = []
     note = ""
     source = target["source"]
+    flatpak_group = None
     if source == "deb":
         pk, method, signature, args = pk_args(target, action, 4 | 2)
         changes, _ = pk.transaction(method, signature, args)
@@ -818,6 +822,8 @@ def plan(target, action):
             note = "The system package service will request administrator authorization if needed."
     elif source == "flatpak":
         ref = flatpak_ref(target)
+        if target.get('ref_kind') == 'runtime' and action != 'update':
+            raise AppCenterError('Shared Flatpak runtimes can be updated here. Flatpak manages their removal.')
         if action == "install":
             metadata = run(["flatpak", "--" + target["scope"], "remote-info", "--show-metadata", "--", target["remote"], ref])
             permissions = flatpak_permissions(metadata)
@@ -825,6 +831,16 @@ def plan(target, action):
         else:
             note = "Application data is kept when removing a Flatpak. Shared runtimes may also be updated."
         changes = [{"info": action, "id": ref, "summary": target.get("name", target["id"])}]
+        if action == 'update':
+            selected = dict(target, arch=target.get('arch') or run(['flatpak', '--default-arch']).strip())
+            available = management_flatpaks(updates=True, scopes=(target['scope'],))
+            candidate = next((i for i in available if software_key(i)==software_key(selected)), None)
+            if candidate is None:
+                raise AppCenterError('This Flatpak no longer has an available update. Check for updates again.')
+            flatpak_group = flatpak_update_group(target['scope'], [dict(ref=ref, commit=candidate.get('update_commit', ''))])
+            if flatpak_group is None:
+                raise AppCenterError('No Flatpak changes remain to apply.')
+            changes, note = flatpak_group['changes'], flatpak_group['note']
     elif source == "snap":
         path = "/v2/snaps/" + urllib.parse.quote(target["id"], safe="")
         if action == "install":
@@ -833,7 +849,10 @@ def plan(target, action):
                 raise AppCenterError("Snap is no longer available.")
             confinement = found[0].get("confinement", "strict")
         else:
-            confinement = snap_api(path)["result"].get("confinement", "strict")
+            record = snap_api(path)["result"]
+            if action == 'remove' and record.get('type') in ('base', 'core', 'os', 'snapd', 'kernel', 'gadget'):
+                raise AppCenterError('This is a protected Snap system component.')
+            confinement = record.get("confinement", "strict")
         if confinement == "devmode":
             raise AppCenterError("Developer mode snaps are not supported by this version.")
         target = dict(target, confinement=confinement)
@@ -852,6 +871,8 @@ def plan(target, action):
             note = "Removes the store's copy and menu entry. The original download and application data are kept."
         changes = [{"info": action, "id": target["id"], "summary": target.get("name", target["id"])}]
     result = dict(target=target, action=action, changes=sorted(changes, key=lambda x: (x["id"], x["info"])), note=note)
+    if flatpak_group is not None:
+        result['flatpak_group'] = flatpak_group
     result["fingerprint"] = fingerprint(result)
     return result
 
@@ -859,7 +880,8 @@ def plan(target, action):
 def fingerprint(plan_data):
     # Summaries and display labels are not transaction identity.
     payload = dict(target=plan_data["target"], action=plan_data["action"],
-                   changes=[(c["id"], c["info"]) for c in plan_data["changes"]], note=plan_data["note"])
+                   changes=[(c["id"], c["info"], c.get('remote', ''), c.get('commit', '')) for c in plan_data["changes"]], note=plan_data["note"],
+                   transaction_targets=plan_data.get('flatpak_group', {}).get('targets', []))
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -867,7 +889,10 @@ def flatpak_ref(target):
     arch = target.get("arch") or run(["flatpak", "--default-arch"]).strip()
     if not APPID.fullmatch(arch):
         raise AppCenterError("Invalid Flatpak architecture.")
-    return "app/" + target["id"] + "/" + arch + "/" + target["branch"]
+    kind = target.get('ref_kind', 'app')
+    if kind not in ('app', 'runtime'):
+        raise AppCenterError('Invalid Flatpak reference kind.')
+    return kind + "/" + target["id"] + "/" + arch + "/" + target["branch"]
 
 
 def stream_command(args):
@@ -1153,9 +1178,13 @@ def apply(approved):
             pk, method, sig, args = pk_args(target, action, 2)
             _, restarts = pk.transaction(method, sig, args)
         elif source == "flatpak":
-            args = ["flatpak", "--" + target["scope"], {"remove": "uninstall"}.get(action, action), "--assumeyes", "--noninteractive"]
-            args += ["--", target["remote"], flatpak_ref(target)] if action == "install" else ["--", flatpak_ref(target)]
-            stream_command(args)
+            if action == 'update':
+                group = current['flatpak_group']
+                flatpak_update_group(target['scope'], group['targets'], approved=group)
+            else:
+                args = ["flatpak", "--" + target["scope"], {"remove": "uninstall"}.get(action, action), "--assumeyes", "--noninteractive"]
+                args += ["--", target["remote"], flatpak_ref(target)] if action == "install" else ["--", flatpak_ref(target)]
+                stream_command(args)
         elif source == "snap":
             body = {"action": {"update": "refresh"}.get(action, action)}
             if action == "install":
@@ -1186,7 +1215,8 @@ def apply(approved):
                 raise AppCenterError("This AppImage is no longer in the store library.")
             (data_home() / "applications" / ("org.cutefish.AppCenter.AppImage-" + target["id"] + ".desktop")).unlink(missing_ok=True)
             shutil.rmtree(dest)
-        return {"message": "Operation completed." + (" A session or system restart is required." if restarts else ""), "restart": bool(restarts)}
+        restart, notice = restart_notice(restarts)
+        return {"message": "Operation completed." + (' ' + notice if notice else ''), "restart": restart}
 
 
 def inventory_provider(source, mode, query):
@@ -1210,6 +1240,401 @@ def inventory_provider(source, mode, query):
         local = ranked_search(appimage_items(), query)
         return local + appimage_catalog(query)
     return appimage_items()
+
+
+def software_key(item):
+    source = item['source']
+    if source == 'deb':
+        name, _, suffix = item['id'].partition(':')
+        return json.dumps([source, name, item.get('architecture') or suffix or 'native'], separators=(',', ':'))
+    if source == 'flatpak':
+        return json.dumps([source, item['scope'], item.get('ref_kind', 'app'), item['id'], item.get('arch', ''), item['branch'], item['remote']], separators=(',', ':'))
+    return json.dumps([source, item.get('scope', 'system'), item['id']], separators=(',', ':'))
+
+
+def management_sources():
+    result = ['deb']
+    if shutil.which('flatpak'):
+        result.append('flatpak')
+    if shutil.which('snap') or Path('/run/snapd.socket').exists():
+        result.append('snap')
+    return result
+
+
+def desktop_record(path):
+    if not visible_desktop(path):
+        return None
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        parser.read(path, encoding='utf-8')
+        entry = parser['Desktop Entry']
+        return dict(name=metadata_text(entry['Name']), summary=metadata_text(entry.get('Comment', '')),
+                    icon=metadata_text(entry.get('Icon', 'application-x-executable'), 1024),
+                    desktop_ids=[Path(path).name], desktop_app=True, is_application=True, snap_instance=entry.get('X-SnapInstanceName', ''))
+    except (OSError, KeyError, configparser.Error, UnicodeError):
+        return None
+
+
+def debian_desktop_packages():
+    """Join visible launchers to package owners in one dpkg query; never run Exec."""
+    result = {}
+    try:
+        ownership = run(['dpkg-query', '--search', '/usr/share/applications/*.desktop'])
+    except AppCenterError:
+        return result
+    for line in ownership.splitlines():
+        owners, separator, filename = line.rpartition(': ')
+        path = PurePosixPath(filename)
+        if not separator or path.parent != PurePosixPath('/usr/share/applications') or path.suffix != '.desktop':
+            continue
+        record = desktop_record(filename)
+        if record:
+            for package in owners.split(', '):
+                if PACKAGE.fullmatch(package):
+                    result.setdefault(package, record)
+    return result
+
+
+def flatpak_api(scope):
+    try:
+        import gi
+        gi.require_version('Flatpak', '1.0')
+        from gi.repository import Flatpak, GLib
+        installation = Flatpak.Installation.new_user(None) if scope == 'user' else Flatpak.Installation.new_system(None)
+        return Flatpak, GLib, installation
+    except (ImportError, ValueError) as error:
+        raise AppCenterError('Flatpak management needs gir1.2-flatpak-1.0. ' + str(error)) from None
+
+
+def management_flatpaks(updates=False, refresh=False, scopes=('user', 'system')):
+    items = []
+    for scope in scopes:
+        F, GLib, installation = flatpak_api(scope)
+        try:
+            if refresh:
+                for remote in installation.list_remotes(None):
+                    if not remote.get_disabled():
+                        installation.update_remote_sync(remote.get_name(), None)
+            refs = installation.list_installed_refs_for_update(None) if updates else installation.list_installed_refs(None)
+            metadata = {}
+            for ref in refs:
+                kind = 'app' if ref.get_kind() == F.RefKind.APP else 'runtime'
+                ident, arch, branch, remote = ref.get_name(), ref.get_arch(), ref.get_branch(), ref.get_origin()
+                if not all(APPID.fullmatch(x or '') for x in (ident, arch, branch, remote)):
+                    continue
+                if kind == 'app' and arch not in metadata:
+                    metadata[arch] = flatpak_appstream(scope, arch)
+                item = dict(source='flatpak', id=ident, scope=scope, ref_kind=kind, arch=arch, branch=branch,
+                            remote=remote, installed=True, version=ref.get_appdata_version() or '',
+                            installed_version=ref.get_appdata_version() or '', name=ref.get_appdata_name() or ident,
+                            icon='application-x-executable', summary='Shared Flatpak runtime' if kind == 'runtime' else '',
+                            is_application=kind == 'app', installed_commit=ref.get_commit())
+                item.update({k: v for k, v in metadata.get(arch, {}).get((ident, arch, branch, remote), {}).items()
+                             if k not in ('version', 'name')})
+                if updates:
+                    item.update(update_available=True, update_commit=ref.get_latest_commit() or '', update_version=metadata.get(arch, {}).get((ident, arch, branch, remote), {}).get('version', ''))
+                item['install_key'] = software_key(item)
+                items.append(item)
+        except GLib.Error as error:
+            raise AppCenterError(str(error)) from None
+    return items
+
+
+def management_provider(source, updates=False, refresh=False):
+    if source == 'flatpak':
+        return management_flatpaks(updates, refresh)
+    if source == 'deb':
+        if updates:
+            pk = PackageKit()
+            if refresh:
+                pk.transaction('RefreshCache', '(b)', (True,))
+            packages, _ = pk.transaction('GetUpdates', '(t)', (0,))
+            metadata = appstream()
+            result = []
+            for package in packages:
+                fields = package['id'].split(';')
+                if len(fields) != 4 or not PACKAGE.fullmatch(fields[0]):
+                    continue
+                item = dict(source='deb', id=fields[0], scope='system', installed=True, architecture=fields[2],
+                            package_id=package['id'], name=fields[0], summary=package['summary'], version=fields[1],
+                            update_version=fields[1], update_available=True, update_blocked=package.get('info') == 'blocked',
+                            icon='application-x-deb')
+                item.update(metadata.get(fields[0].split(':')[0], {}))
+                item['is_application'] = bool(item.get('desktop_app'))
+                item['install_key'] = software_key(item)
+                result.append(item)
+            return result
+        metadata, desktops = appstream(), debian_desktop_packages()
+        items = dpkg_installed()
+        for item in items:
+            item.update(metadata.get(item['id'].split(':')[0], {}))
+            desktop = desktops.get(item['id']) or desktops.get(item['id'].split(':')[0])
+            if desktop:
+                for key, value in desktop.items():
+                    if not item.get('desktop_app') or not item.get(key):
+                        item[key] = value
+            item['is_application'] = bool(item.get('desktop_app') or desktop)
+            item['installed_version'] = item['version']
+            item['install_key'] = software_key(item)
+        return items
+    if source == 'snap':
+        items = snap_items(updates=updates, limit=None)
+        # Installed exports are positive GUI-app evidence, unlike snap type=app
+        # alone, which also covers command-line services and daemon packages.
+        desktops = {}
+        for path in sorted(Path('/var/lib/snapd/desktop/applications').glob('*.desktop')):
+            desktop = desktop_record(str(path))
+            if desktop:
+                instance = desktop.get('snap_instance') or next((i['id'] for i in sorted(items, key=lambda x:-len(x['id'])) if path.stem.startswith(i['id']+'_')), '')
+                if instance:
+                    desktops.setdefault(instance, desktop)
+        for item in items:
+            desktop = desktops.get(item['id'])
+            item['is_application'] = item.get('snap_type') == 'app' and bool(desktop)
+            item['protected'] = item.get('snap_type') in ('base', 'core', 'os', 'snapd', 'kernel', 'gadget')
+            if desktop and item['icon'].startswith('application-x-'):
+                item['icon'] = desktop['icon']
+            if updates:
+                item.update(update_available=True, update_version=item.get('version', ''))
+            else:
+                item['installed_version'] = item.get('version', '')
+            item['install_key'] = software_key(item)
+        return items
+    items = appimage_items()
+    return [dict(item, is_application=True, installed_version=item.get('version', ''), install_key=software_key(item)) for item in items]
+
+
+def management_inventory(request=None, updates=False):
+    request = request or {}
+    sources = management_sources() + ([] if updates else ['appimage'])
+    items, warnings = [], []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        pending = {executor.submit(management_provider, source, updates, request.get('refresh', False)): source for source in sources}
+        for future in concurrent.futures.as_completed(pending):
+            try:
+                items.extend(future.result())
+            except Exception as error:
+                warnings.append(pending[future] + ': ' + str(error))
+    items.sort(key=lambda i: (i.get('name', i['id']).casefold(), i['install_key']))
+    return dict(items=items, warnings=sorted(warnings), complete=not warnings,
+                update_count=sum(not item.get('update_blocked') for item in items) if updates else 0)
+
+
+def changes_identity(changes):
+    return sorted((c['info'], c['id'], c.get('remote', ''), c.get('commit', '')) for c in changes)
+
+
+def update_plan_fingerprint(plan_data):
+    # Review labels and download estimates do not determine transaction identity.
+    payload = [dict(source=g['source'], scope=g.get('scope', 'system'), targets=g['targets'],
+                    changes=changes_identity(g['changes'])) for g in plan_data['groups']]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def check_protected_changes(changes):
+    removed = {c['id'].split(';')[0].split(':')[0] for c in changes if c['info'] in ('remove', 'removing', 'obsolete', 'obsoleting')}
+    if removed:
+        protected = {i['id'].split(':')[0] for i in dpkg_installed() if i.get('protected')}
+        if removed & protected:
+            raise AppCenterError('These updates would remove an essential or protected system package.')
+
+
+def debian_update_group(items):
+    ids = sorted({i['package_id'] for i in items if not i.get('update_blocked')})
+    if not ids:
+        return None
+    changes, _ = PackageKit().transaction('UpdatePackages', '(tas)', (6, ids))
+    check_protected_changes(changes)
+    labels = {i['package_id']: i for i in items}
+    for change in changes:
+        fields = change['id'].split(';')
+        if len(fields) == 4:
+            change.update(name=labels.get(change['id'], {}).get('name', fields[0]), version=fields[1])
+    return dict(source='deb', scope='system', name='Debian system', targets=ids, changes=changes,
+                note='Includes application and system-package updates. Debian resolves and previews required dependency changes.')
+
+
+def flatpak_operations(transaction):
+    result = []
+    for operation in transaction.get_operations():
+        kind = int(operation.get_operation_type())
+        if kind not in (0, 1, 2, 3):
+            raise AppCenterError('Unsupported Flatpak update operation.')
+        result.append(dict(info={0:'install', 1:'update', 2:'install', 3:'remove'}[kind], id=operation.get_ref(),
+                           name=operation.get_ref().split('/')[1], remote=operation.get_remote() or '',
+                           commit=operation.get_commit() or '', download_size=operation.get_download_size()))
+    return sorted(result, key=lambda c: (c['id'], c['info']))
+
+
+def flatpak_update_group(scope, targets, approved=None):
+    F, GLib, installation = flatpak_api(scope)
+    old_umask = os.umask(0o022)
+    state = dict(ready=False, changes=[], error='')
+    try:
+        tx = F.Transaction.new_for_installation(installation, None)
+        tx.set_no_interaction(approved is None)
+        tx.add_default_dependency_sources()
+        tx.connect('add-new-remote', lambda *_: False)
+        tx.connect('choose-remote-for-ref', lambda _tx, _for, _runtime, remotes: 0 if len(remotes)==1 else -1)
+        tx.connect('webflow-start', lambda *_: False)
+        tx.connect('basic-auth-start', lambda *_: False)
+        for target in targets:
+            tx.add_update(target['ref'], None, target.get('commit') or None)
+        def ready(transaction):
+            try:
+                state['changes'] = flatpak_operations(transaction)
+                state['ready'] = True
+                if approved is not None and changes_identity(state['changes']) != changes_identity(approved['changes']):
+                    state['error'] = 'Flatpak dependencies changed. Review all updates again.'
+                    return False
+                return approved is not None
+            except Exception as error:
+                state['error'] = str(error)
+                return False
+        tx.connect('ready-pre-auth', ready)
+        # Recheck after authorization as well, before any download/deployment.
+        tx.connect('ready', ready)
+        def new_operation(_transaction, operation, status):
+            status.connect('changed', lambda p: progress('Flatpak: ' + p.get_status(), p.get_progress()))
+            progress('Flatpak: ' + operation.get_ref())
+        if approved is not None:
+            tx.connect('new-operation', new_operation)
+            tx.connect('operation-error', lambda _tx, _op, error, _details: state.update(error=str(error)) or False)
+        try:
+            tx.run(None)
+        except GLib.Error as error:
+            if approved is not None or not state['ready']:
+                raise AppCenterError(state['error'] or str(error)) from None
+        if state['error']:
+            raise AppCenterError(state['error'])
+        if approved is not None:
+            return
+        operations = {c['id']: c for c in state['changes']}
+        resolved = [dict(ref=t['ref'], commit=operations.get(t['ref'], {}).get('commit') or t.get('commit', '')) for t in targets]
+        if not state['changes']:
+            return None
+        return dict(source='flatpak', scope=scope, name='Flatpak · ' + scope, targets=resolved,
+                    changes=state['changes'], note='Includes the listed applications, runtimes and required related components. New software sources are not added.')
+    except GLib.Error as error:
+        raise AppCenterError(str(error)) from None
+    finally:
+        os.umask(old_umask)
+
+
+def snap_update_group(items):
+    if not items:
+        return None
+    targets = sorted([dict(name=i['id'], revision=i.get('revision', ''), installed_revision=i.get('installed_revision', '')) for i in items], key=lambda t:t['name'])
+    return dict(source='snap', scope='system', name='Snap system', targets=targets,
+                changes=[dict(info='update', id=i['id'], name=i['name'], version=i.get('version', '')) for i in items],
+                note='Updates the listed snaps. Snapd resolves any required supporting components when the refresh starts.')
+
+
+def prepare_all_updates():
+    inventory = management_inventory(updates=True)
+    if not inventory['complete']:
+        raise AppCenterError('Could not check every configured update source. No updates have been applied.\n' + '\n'.join(inventory['warnings']))
+    items = [i for i in inventory['items'] if not i.get('update_blocked')]
+    if len(items) > 10000:
+        raise AppCenterError('Too many updates for one review. Use the system package tools to complete these updates.')
+    groups = []
+    deb = debian_update_group([i for i in items if i['source']=='deb'])
+    if deb:
+        groups.append(deb)
+    for scope in ('system', 'user'):
+        refs = [dict(ref=flatpak_ref(i), commit=i.get('update_commit', '')) for i in items if i['source']=='flatpak' and i['scope']==scope]
+        if refs:
+            group = flatpak_update_group(scope, refs)
+            if group:
+                groups.append(group)
+    snap = snap_update_group([i for i in items if i['source']=='snap'])
+    if snap:
+        groups.append(snap)
+    result = dict(groups=groups, count=sum(len(g['targets']) for g in groups),
+                  blocked_count=sum(bool(i.get('update_blocked')) for i in inventory['items']),
+                  note='Update All covers every configured source, including system packages and runtimes, regardless of the current list filters. AppImages must be updated from their publishers.')
+    result['fingerprint'] = update_plan_fingerprint(result)
+    return result
+
+
+def restart_notice(restarts):
+    names = set()
+    for value in restarts:
+        if isinstance(value, str):
+            names.add(value)
+        else:
+            import ctypes
+            lib = ctypes.CDLL('libpackagekit-glib2.so.18')
+            fn = lib.pk_restart_enum_to_string
+            fn.argtypes = [ctypes.c_int]
+            fn.restype = ctypes.c_char_p
+            names.add((fn(value) or b'unknown').decode())
+    if names & {'system', 'security-system'}:
+        return True, 'A system restart is required.'
+    if names & {'session', 'security-session'}:
+        return True, 'Sign out and back in to complete these updates.'
+    if 'application' in names:
+        return False, 'Restart updated applications to use their new versions.'
+    return False, ''
+
+
+def wait_snap_update(reply):
+    if reply.get('type') != 'async':
+        return
+    change_id = str(reply.get('change', ''))
+    if not change_id.isdigit():
+        raise AppCenterError('Invalid Snap update response.')
+    while True:
+        change = snap_api('/v2/changes/' + change_id)['result']
+        progress('Snap: ' + change.get('summary', 'Updating software…'))
+        if change.get('ready'):
+            if change.get('err') or change.get('status') != 'Done':
+                raise AppCenterError(change.get('err') or 'Snap updates did not complete.')
+            return
+        time.sleep(0.7)
+
+
+def apply_all_updates(approved):
+    if not isinstance(approved, dict) or not re.fullmatch(r'[a-f0-9]{64}', str(approved.get('fingerprint', ''))):
+        raise AppCenterError('Review all updates before applying them.')
+    with mutation_lock():
+        current = prepare_all_updates()
+        if current['fingerprint'] != approved['fingerprint']:
+            raise AppCenterError('Available updates or dependencies changed. Review all updates again; nothing has been applied.')
+        completed, errors, pending, restarts = [], [], [], []
+        for index, group in enumerate(current['groups']):
+            progress('Updating ' + group['name'] + ' (' + str(index+1) + ' of ' + str(len(current['groups'])) + ')…')
+            try:
+                if group['source'] == 'deb':
+                    # Re-simulate immediately before modification, preserving exact package IDs.
+                    changes, _ = PackageKit().transaction('UpdatePackages', '(tas)', (6, group['targets']))
+                    check_protected_changes(changes)
+                    if changes_identity(changes) != changes_identity(group['changes']):
+                        raise AppCenterError('Debian dependency changes no longer match the review.')
+                    _, restart = PackageKit().transaction('UpdatePackages', '(tas)', (2, group['targets']))
+                    restarts.extend(restart)
+                elif group['source'] == 'flatpak':
+                    flatpak_update_group(group['scope'], group['targets'], approved=group)
+                else:
+                    latest = snap_update_group(management_provider('snap', updates=True))
+                    if not latest or latest['targets'] != group['targets']:
+                        raise AppCenterError('Snap updates changed. Review all updates again.')
+                    wait_snap_update(snap_api('/v2/snaps', dict(action='refresh', snaps=[t['name'] for t in group['targets']])))
+                completed.append(group['name'])
+            except Exception as error:
+                errors.append(group['name'] + ': ' + str(error))
+                pending = [g['name'] for g in current['groups'][index+1:]]
+                break
+        message = ('No installable updates. Held or blocked updates were left unchanged.' if current['blocked_count'] else 'No updates are available.') if not current['groups'] else 'Updates completed.'
+        if errors:
+            message = ('Completed: ' + ', '.join(completed) + '.\n' if completed else '') + 'Some updates could not be completed.\n' + '\n'.join(errors)
+            if pending:
+                message += '\nNot attempted: ' + ', '.join(pending) + '.'
+            message += '\nCompleted changes are kept. Check for updates before retrying.'
+        restart, notice = restart_notice(restarts)
+        if notice:
+            message += '\n' + notice
+        return dict(message=message, completed=completed, errors=errors, pending=pending, restart=restart)
 
 
 def listing(request):
@@ -1361,7 +1786,7 @@ def cached_artwork(url):
         return stale
     if not public_https(url, resolve=True):
         return stale
-    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.2.3'})
+    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.3.0'})
     try:
         with urllib.request.build_opener(ArtworkRedirect()).open(request, timeout=6) as response:
             raw = response.read(6 * 1024 * 1024 + 1)
@@ -1529,7 +1954,7 @@ def visible_desktop(path):
 
 def flatpak_installed(target):
     arch = target.get('arch') or run(['flatpak', '--default-arch']).strip()
-    text = run(['flatpak', '--' + target['scope'], 'list', '--app', '--columns=application,branch,origin,arch,version'])
+    text = run(['flatpak', '--' + target['scope'], 'list', '--runtime' if target.get('ref_kind') == 'runtime' else '--app', '--columns=application,branch,origin,arch,version'])
     for line in text.splitlines():
         fields = line.split('\t')
         if len(fields) >= 4 and tuple(fields[:4]) == (target['id'], target['branch'], target['remote'], arch):
@@ -1543,6 +1968,8 @@ def launch_spec(target):
     if target.get('catalog'):
         return None
     if source == 'flatpak':
+        if target.get('ref_kind') == 'runtime':
+            return None
         installed = flatpak_installed(target)
         return dict(kind='flatpak', **installed) if installed is not None else None
     if source == 'deb':
@@ -1838,6 +2265,14 @@ def dispatch(request):
     op = request.get("op")
     if op == "icons":
         return list_icons(request)
+    if op == 'plan_all_updates':
+        return {'plan': prepare_all_updates()}
+    if op == 'apply_all_updates':
+        return apply_all_updates(request.get('plan'))
+    if op == 'library':
+        return management_inventory(request)
+    if op == 'update_inventory':
+        return management_inventory(request, updates=True)
     if op == "details":
         return app_details(request["target"])
     if op == "launch":
@@ -1869,7 +2304,7 @@ def dispatch(request):
 
 def main():
     try:
-        request = json.loads(sys.stdin.readline(1024 * 1024))
+        request = json.loads(sys.stdin.readline(8 * 1024 * 1024))
         emit(dict(event="result", ok=True, **dispatch(request)))
     except Exception as e:
         emit({"event": "result", "ok": False, "error": str(e)})
