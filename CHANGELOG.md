@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 — 2026-11-05
+
+- Combine Installed and Updates into one panel, with update rows first, application-only defaults, All software and Updates only filters.
+- Identify desktop apps from catalog metadata and visible launchers, keeping libraries, services and runtimes accessible without cluttering the default list.
+- Add Update All for every configured source, including Debian system packages, Flatpak runtimes and Snap bases, with a full review independent of list filters.
+- Use libflatpak for structured update inventory and reviewed update transactions, including exact commits and related runtime changes.
+- Recheck plans before modification, preserve held/protected packages, stop later sources after a failure, and report completed changes and restart requirements.
+- Check updates separately in the background and keep installed software usable when an update source is unavailable.
+
 ## 0.2.3 — 2026-11-05
 
 - Rebuild with Debian's installed compiler and shared C++ runtime to fix the launch failure after the Cutefish toolkit update.

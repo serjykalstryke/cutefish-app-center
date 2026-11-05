@@ -50,7 +50,7 @@ and that you are using the current native toolkit.
 sudo apt update
 sudo apt install build-essential cmake git python3 python3-gi \
     packagekit libpackagekit-glib2-18 xdg-utils squashfs-tools util-linux \
-    libfuse2t64 dbus appstream gir1.2-appstream-1.0 apt-config-icons
+    libfuse2t64 dbus appstream gir1.2-appstream-1.0 gir1.2-flatpak-1.0 apt-config-icons
 sudo apt update
 ```
 
@@ -60,6 +60,7 @@ prompts. `squashfs-tools` and `util-linux` read embedded AppImage metadata;
 `appstream`, its Python bindings and `apt-config-icons` provide Debian's
 application catalog and icons before apps are installed. Run `sudo apt update`
 after installing these dependencies to fetch that metadata and icon cache.
+`gir1.2-flatpak-1.0` supplies structured Flatpak inventory and update transactions.
 
 Install optional providers if you want to use them:
 
@@ -109,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.2.3_amd64.deb
-sudo apt install ./cutefish-app-center_0.2.3_amd64.deb
+    --output cutefish-app-center_0.3.0_amd64.deb
+sudo apt install ./cutefish-app-center_0.3.0_amd64.deb
 cutefish-app-center
 ```
 
@@ -139,9 +140,12 @@ normal system installation.
 - **Discover:** browse a featured-app carousel and application categories, or
   search configured Debian, Flatpak, Snap and AppImage sources. Selecting a card
   opens the existing search-and-details view so you can compare software sources.
-- **Installed:** inspect and remove installed software. Debian inventory
-  includes system packages, so review dependency changes before confirming.
-- **Updates:** apply individual updates reported by configured providers.
+- **Installed:** manage installed apps and updates together. Applications appear
+  by default, with available updates first. Choose **All software** to include
+  libraries, services and runtimes, or **Updates only** to narrow the list.
+  **Check for Updates** refreshes configured sources. **Update All** reviews
+  every source, including Debian system packages, Flatpak runtimes and Snap
+  bases; its count and scope are independent of the visible filters.
 - **Install from File:** drag a `.deb` or AppImage onto the page, or choose a
   file to review before installing. File drops elsewhere in the window also open
   this page. Ctrl+O opens the native file chooser.
@@ -156,6 +160,18 @@ cutefish-app-center ~/Downloads/Example.AppImage
 Matching Debian AppStream and Flatpak IDs share a detail page with a source
 selector. Flatpak scope, architecture, branch and remote remain attached to
 each choice. Search excludes Flatpak runtime extensions.
+
+In Installed, application classification uses AppStream desktop metadata or
+visible exported launchers, rather than package-name rules. Separate Flatpak
+scopes and branches and Debian architectures remain separate installations.
+Held or blocked updates are identified and excluded from Update All. AppImages
+remain manually updated through their publishers.
+
+Update All shows the proposed changes before **Apply Updates**. Canceling the
+review applies nothing. If a source cannot be checked, the list remains usable
+and Update All waits until that source is available. If applying updates fails,
+the result identifies completed sources and those not attempted. Completed
+changes remain installed. Required restart or sign-in notices appear afterward.
 
 Select an app to load its full description, publisher, versions and license
 where provided. Catalog artwork appears in a screenshot gallery; use the
@@ -224,6 +240,7 @@ python3 tests/test_discover.py -v
 python3 tests/test_debian_catalog.py -v
 python3 tests/test_catalog_icons.py -v
 python3 tests/test_packaging.py -v
+python3 tests/test_management.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
@@ -245,7 +262,14 @@ CUTEFISH_APP_CENTER_BACKEND="$PWD/backend/app_center_backend.py" \
 ./build/cutefish-app-center-details-smoke
 ./build/cutefish-app-center-home-smoke
 ./build/cutefish-app-center-icons-smoke
+./build/cutefish-app-center-management-smoke
 ```
+
+The management smoke test uses a private provider to check application filtering,
+update sorting, global review scope, cancellation, partial-source errors and
+restart messages. Its fixture apply writes a test marker only.
+`./build/cutefish-app-center-management-smoke --live` renders the actual
+Installed and All software lists without applying updates.
 
 The icons smoke test covers delayed artwork, navigation while an icon request
 is pending, small request batches and loading further rows on scroll. Its
@@ -273,14 +297,17 @@ it does not require downgrading Cutefish or replacing system libraries.
 
 This is a first version. AppImage downloads/updates are manual, named system
 Flatpak installations are unsupported. Debian artwork depends on the catalogs
-and icon caches published by configured repositories. There is no update-all, repository editor, transaction
-history, permission editor, ratings yet. Search/display limits
+and icon caches published by configured repositories. There is no repository
+editor, transaction history, permission editor or ratings yet. Search/display limits
 are described in [architecture notes](docs/ARCHITECTURE.md).
 
 Debian transactions use PackageKit simulation, review, and normal Polkit
-authorization. Essential/protected removals are refused. Flatpak/Snap services
-handle their own runtime dependencies; their review is not a full dependency
-or download-size simulation. Local Debian packages and AppImages should come
+authorization. Essential/protected removals are refused. Flatpak updates use
+libflatpak to review and recheck exact commits and required runtime changes;
+new sources and interactive repository authentication are unsupported in this flow.
+Flatpak installs/removals still use the CLI and do not provide the same full
+dependency preview. Snap reviews list the selected refreshes; snapd resolves
+supporting components when execution starts. Local Debian packages and AppImages should come
 from a publisher you trust.
 
 If an imported AppImage immediately exits, run the downloaded file in a
