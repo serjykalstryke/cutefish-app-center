@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3 — 2026-11-05
+
+- Rebuild with Debian's installed compiler and shared C++ runtime to fix the launch failure after the Cutefish toolkit update.
+- Refuse packaging when the binary lacks a direct shared C++ runtime dependency, has missing libraries, or has unresolved runtime symbols.
+- Document clean rebuilds after toolkit changes and add packaging regression checks.
+
 ## 0.2.2 — 2026-11-04
 
 - Show Snap Store and AppImageHub icons before installation with a separate asynchronous loader for visible result rows.

@@ -76,9 +76,15 @@ as Flathub using its [official setup instructions](https://flathub.org/setup).
 ```sh
 git clone https://github.com/serjykalstryke/cutefish-app-center.git
 cd cutefish-app-center
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_CXX_COMPILER=/usr/bin/g++
 cmake --build build --parallel 2
 ```
+
+Use the installed system compiler with its complete development packages.
+Avoid mixing headers, static archives and libraries from a partially extracted
+compiler toolchain. When changing compilers or upgrading the Cutefish toolkit,
+configure a fresh build directory (for example `-B build-clean`) and build there.
 
 ### 4. Run without installing
 
@@ -103,10 +109,15 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.2.2_amd64.deb
-sudo apt install ./cutefish-app-center_0.2.2_amd64.deb
+    --output cutefish-app-center_0.2.3_amd64.deb
+sudo apt install ./cutefish-app-center_0.2.3_amd64.deb
 cutefish-app-center
 ```
+
+The packaging script verifies shared C++ runtime linkage and checks that all
+runtime libraries and symbols resolve on the build system before writing the
+package. You can run only that check with
+`python3 scripts/package.py build/cutefish-app-center --check-only`.
 
 The current packaging script targets **Debian 13 amd64** and declares the
 required Cutefish toolkit revision and runtime packages. APT resolves those
@@ -212,6 +223,7 @@ python3 tests/test_details.py -v
 python3 tests/test_discover.py -v
 python3 tests/test_debian_catalog.py -v
 python3 tests/test_catalog_icons.py -v
+python3 tests/test_packaging.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
@@ -250,6 +262,14 @@ Real install/update/remove testing belongs on a disposable system. See the
 [validation notes](docs/VALIDATION.md) for results and their limits.
 
 ## Current limits and troubleshooting
+
+If App Center reports a `symbol lookup error` after a toolkit update, rebuild
+against the installed toolkit using a fresh build directory and the system
+compiler, then recreate/reinstall the `.deb`. In particular, 0.2.3 corrects
+`undefined symbol: _ZNSt8ios_base4Init20_S_synced_with_stdioE` in the earlier
+provided binary. This was accidental partial static C++ runtime linkage;
+it does not require downgrading Cutefish or replacing system libraries.
+
 
 This is a first version. AppImage downloads/updates are manual, named system
 Flatpak installations are unsupported. Debian artwork depends on the catalogs
