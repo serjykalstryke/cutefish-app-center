@@ -10,11 +10,13 @@ TX='''<node><interface name="org.freedesktop.PackageKit.Transaction">
 <method name="SetHints"><arg type="as" direction="in"/></method>
 <method name="Resolve"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
 <method name="GetUpdates"><arg type="t" direction="in"/></method>
+<method name="UpdatePackages"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
 <method name="InstallPackages"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
 <method name="RemovePackages"><arg type="t" direction="in"/><arg type="as" direction="in"/><arg type="b" direction="in"/><arg type="b" direction="in"/></method>
 <method name="InstallFiles"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
 <signal name="Package"><arg type="u"/><arg type="s"/><arg type="s"/></signal>
 <signal name="ErrorCode"><arg type="u"/><arg type="s"/></signal>
+<signal name="RequireRestart"><arg type="u"/><arg type="s"/></signal>
 <signal name="Finished"><arg type="u"/><arg type="u"/></signal>
 </interface></node>'''
 bus=Gio.bus_get_sync(Gio.BusType.SESSION,None)
@@ -33,6 +35,11 @@ def method(conn,sender,path,iface,method,args,invocation):
    if method=='Resolve':
     name=args.unpack()[1][0]
     bus.emit_signal(sender,path,IFACE,'Package',GLib.Variant('(uss)',(2,name+';1.0;amd64;fixture','A protocol fixture')))
+   elif method=='UpdatePackages':
+    flags,ids=args.unpack()
+    for pid in ids:
+     if flags & 4:bus.emit_signal(sender,path,IFACE,'Package',GLib.Variant('(uss)',(11,pid,'A simulated update')))
+    if not flags & 4:bus.emit_signal(sender,path,IFACE,'RequireRestart',GLib.Variant('(us)',(2,ids[0])))
    elif method=='GetUpdates':
     bus.emit_signal(sender,path,IFACE,'ErrorCode',GLib.Variant('(us)',(1,'Fixture error')))
    else:

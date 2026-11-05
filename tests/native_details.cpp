@@ -51,7 +51,7 @@ int main(int argc,char** argv) {
             assert(findLabel(root,"Open"));assert(findLabel(root,"Remove"));assert(findLabel(root,"1 / 2"));
             click(window,findLabel(root,"Open"));stage=1;
         } else if(stage==1 && std::filesystem::exists("work/details-fixture/launch.json")){
-            auto* combo=findView<ui::ComboBox>(root,[](auto* view){return view->items().size()==2;});assert(combo);
+            auto* combo=findView<ui::ComboBox>(root,[](auto* view){return view->items().size()==2 && view->items()[0].starts_with("Flatpak");});assert(combo);
             combo->setCurrentIndex(1);combo->onActivated(1);stage=2;
         } else if(stage==2 && findLabel(root,"Example Team") && findLabel(root,"Install") && !findLabel(root,"Loading app details…")){
             assert(!findLabel(root,"Open"));assert(findLabel(root,"Available"));assert(findLabel(root,"Second screenshot")==nullptr);

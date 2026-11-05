@@ -23,6 +23,14 @@ class ProtocolTest(unittest.TestCase):
   self.assertEqual(changes[0]['info'],'install')
   changes,_=pk.transaction('RemovePackages','(tasbb)',(6,['fixture;1.0;amd64;fixture'],True,False))
   self.assertEqual(changes[0]['info'],'remove')
+ def test_bulk_update_preserves_ids_architectures_and_restart_signals(self):
+  ids=['fixture;2.0;amd64;repo','other;3.0;arm64;repo']
+  pk=b.PackageKit()
+  changes,_=pk.transaction('UpdatePackages','(tas)',(6,ids))
+  self.assertEqual([c['id'] for c in changes],ids)
+  self.assertTrue(all(c['info']=='updating' for c in changes))
+  _,restarts=pk.transaction('UpdatePackages','(tas)',(2,ids))
+  self.assertEqual(restarts,[2])
  def test_errors_reach_the_caller(self):
   with self.assertRaisesRegex(b.AppCenterError,'Fixture error'):b.PackageKit().transaction('GetUpdates','(t)',(0,))
 

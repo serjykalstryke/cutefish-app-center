@@ -34,7 +34,13 @@ int main(int argc,char** argv) {
         w.grab();
         bool ready=containsLabel(w.contentView()," entries");
         if(stage==0 && ready){
-            assert(findLabel(w.contentView(),"Installed"));
+            assert(findLabel(w.contentView(),"Installed"));assert(!findLabel(w.contentView(),"Updates"));
+            std::function<ui::ComboBox*(ui::View*)> filter=[&](ui::View* view)->ui::ComboBox*{
+                if(auto* combo=dynamic_cast<ui::ComboBox*>(view);combo && !combo->items().empty() && combo->items()[0]=="Applications")return combo;
+                for(auto& child:view->children())if(auto* found=filter(child.get()))return found;
+                return nullptr;
+            };
+            auto* view=filter(w.contentView());assert(view);view->setCurrentIndex(1);view->onActivated(1);
             auto* search=findSearch(w.contentView());click(w,search);ui::TestInput::setKeyboardFocus(w,true);ui::TestInput::typeText(w,"snapd");stage=1;
         } else if(stage==1 && ready && containsLabel(w.contentView(),"snapd") && !containsLabel(w.contentView(),"300 entries")) {
             w.grab().savePng("work/installed-smoke.png");
