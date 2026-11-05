@@ -162,3 +162,34 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
 - All 100 backend/packaging checks and the native home, details and
   asynchronous-icon smoke checks passed. Packaging verifies the
   installed system libraries without development loader overrides.
+
+
+## 0.3.0 Unified Installed panel and system updates — November 5, 2026
+
+- All 128 Python backend, packaging and protocol tests pass. The three
+  PackageKit protocol checks also pass separately under a private D-Bus session,
+  including exact multiarchitecture UpdatePackages arguments and restart signals.
+- Five native headless checks pass: inventory/search, details, Discover/file
+  review, asynchronous icons and unified management. The management fixture
+  exercises application filtering, updates-first sorting, separate installations,
+  global Update All scope despite filters, protected update/removal controls,
+  Cancel, fixture apply, restart notices and an unavailable update source.
+  Fixture apply writes a private test marker and never modifies packages.
+- Live read-only inventory returned 1,383 installed components and 51 desktop
+  applications. Native Installed and All software views rendered with actual
+  package metadata and icons, including runtime-only update availability.
+- A live whole-system review resolved a Flatpak driver-extension install under
+  an already-current parent runtime and a snapd refresh. The Flatpak review
+  aborted at ready-pre-auth; installed refs/commits matched before and after.
+  No real system, Flatpak or Snap updates were applied during these checks.
+- Fresh Release build uses the installed system compiler and current toolkit.
+  Packaging runtime checks passed. APT's preview showed one App Center upgrade,
+  two new Flatpak bindings/library packages and no removals or unrelated upgrades.
+- App Center 0.3.0 and its Flatpak dependencies were installed on the development
+  host. Installed executable/backend bytes match the tested build/source, and
+  the system libflatpak GI loads without development library overrides. The
+  installed app launches, opens the unified panel and completes a refreshed
+  update check without source warnings.
+- Real multi-provider update failure/recovery and authentication remain to be
+  exercised on a disposable machine. Snap dependency changes are resolved by
+  snapd at execution; there is no cross-provider rollback or AppImage updater.

@@ -5,13 +5,13 @@
 The backend has four providers:
 
 - Debian: `apt-cache` and `dpkg-query` for read-only search/inventory; PackageKit D-Bus transactions for simulations and modifications. PackageKit's installed client library converts enum values instead of assuming values from another version. Debian 13's `SetHints(as)` is supported, along with newer dictionary hints.
-- Flatpak: machine-readable columns from the supported Flatpak CLI, explicit `--user`/`--system`, exact refs and remote names. No named installations yet.
+- Flatpak: CLI search/install/remove plus libflatpak GI inventory and reviewed update transactions. Explicit user/system scope, exact refs, origins and commits; no named installations yet.
 - Snap: HTTP over the snapd Unix socket, `X-Allow-Interaction: true`, asynchronous change polling and explicit error handling.
 - AppImage: AppImageHub feed discovery with a 24-hour cache and a browser handoff; a content-addressed personal library under `$XDG_DATA_HOME/cutefish-app-center/appimages/<sha256>`, with atomic metadata/desktop-entry writes. A bounded `unsquashfs` reader extracts only embedded metadata/icon bytes; the AppImage runtime and application are never executed during import. Existing metadata is migrated once when the library is read.
 
 Source entries only merge when a shared AppStream identity is known. The package source, scope and ref remain attached to each variant throughout the UI.
 
-Search ranks candidates before applying provider and global limits. Exact names/IDs lead, then category matches and names, keywords, summaries and description text. A small vocabulary maps common browser/editor/player queries to AppStream categories; app names and availability come from providers, not a curated application list. Category searches require category or short-purpose evidence and exclude helper packages and incidental long-description matches. Installed/Updates retain their inventory ordering and local filtering.
+Search ranks candidates before applying provider and global limits. Exact names/IDs lead, then category matches and names, keywords, summaries and description text. A small vocabulary maps common browser/editor/player queries to AppStream categories; app names and availability come from providers, not a curated application list. Category searches require category or short-purpose evidence and exclude helper packages and incidental long-description matches. Management inventory is untruncated, locally filtered and sorted with available updates first.
 
 Flatpak search augments CLI results with desktop components from the existing per-scope, per-remote AppStream XML cache. Metadata candidates must join an exact available app ref (ID, architecture, branch, remote); each installation scope stays distinct. Legacy `desktop` components are accepted alongside `desktop-application`, while add-ons remain excluded. Debian reads OS-only XML/DEP-11 catalogs with libappstream, resolves repository-cached icons before installation, and falls back to APT names/summaries on minimal systems. Its pool excludes Flatpak and local desktop-file sources; metadata never changes the Debian transaction identity. The appstream and apt-config-icons packages let normal APT refreshes maintain that catalog and icon cache.
 
@@ -20,8 +20,8 @@ Plans bind targets, operations, changes and permission notes with a fingerprint.
 ## Next engineering milestones
 
 1. Disposable Debian/Flatpak/Snap transaction tests: install, upgrade, remove, missing dependencies, package lock contention, failed downloads, authentication denial, held packages and restart requirements.
-2. Improve app-only browsing and reliable cross-source identity mapping.
-3. Replace CLI Flatpak transactions with libflatpak for complete dependency/permission previews, structured progress, cancellation and robust EULA handling.
+2. Refine application classification and cross-source identity mapping against more distributions and catalogs.
+3. Extend libflatpak transactions to installs/removals, permission previews, cancellation and interactive authentication.
 4. Add persistent transaction records, source settings and AppImage direct-download support with signature/hash verification and publisher update metadata.
 5. Integrate localization, accessibility review, keyboard/focus testing and CI against a pinned toolkit version.
 
@@ -53,8 +53,8 @@ The native Menu tree is registered through Application::setMainMenu, with Applic
 
 The native controller tracks the selected page separately from the provider list
 mode. Discover without a query shows a full-width browsing page; searches and
-category/card selections retain the results-and-details view. Installed and
-Updates keep their existing provider inventories. Install from File owns file
+category/card selections retain the results-and-details view. Installed combines
+software inventory and updates. Install from File owns file
 review and the drop target, and About owns version, author and project links.
 Global file drops and command-line files route to the same review flow.
 
@@ -93,3 +93,46 @@ snapd Unix-socket icon endpoint. Four downloads run concurrently at most.
 Existing files are reusable immediately and retained after offline refresh
 failures. Missing or malformed icons preserve the generic fallback. Catalog
 artwork does not install, launch or download an application binary.
+
+
+## Unified software management and system updates
+
+`library` returns the complete installed inventory; `update_inventory` returns
+independent per-source update candidates and completion warnings. Explicit
+refresh checks refresh PackageKit and enabled Flatpak remotes. The native
+controller loads updates asynchronously, preserves explicit selection, and
+filters cached data without invoking a solver on each keystroke. A source failure
+keeps available inventory visible but disables Update All.
+
+`install_key` includes Debian architecture or the full Flatpak scope/kind/ID/
+architecture/branch/origin. Management never merges separate installations.
+Debian applications require desktop AppStream evidence or a package-owned visible
+launcher. Snap applications require an exported visible launcher and app type;
+bases and services remain system components. Flatpak app refs and imported
+AppImages are applications; runtime refs are system components and cannot launch.
+No name-prefix blacklist determines application status. Runtime/base removals
+are refused, while protected system-package updates remain available.
+
+`plan_all_updates` checks every configured source before preparing any changes.
+PackageKit simulates UpdatePackages using exact IDs and architectures; held or
+blocked candidates are excluded and protected removals refused. libflatpak
+resolves app/runtime updates and related extensions, then aborts on
+ready-pre-auth before authorization or deployment. Snap lists explicit refresh
+targets and revisions; supporting components are resolved by snapd at execution.
+AppImages remain manual. All groups and their exact changes determine one
+fingerprint. The native review includes groups hidden by current list filters.
+
+`apply_all_updates` recomputes the entire plan under the mutation lock, rejects
+changed targets/dependencies and uses the recomputed groups. Debian re-simulates
+immediately before applying. Flatpak pins resolved commits and rechecks operation
+identity before and after authorization; required related installs retain their
+original root target even if that root commit is current. Individual Flatpak
+updates use the same review/apply machinery. New remotes and interactive remote
+authentication are refused. Snap rechecks revisions and refreshes only reviewed
+names. Execution proceeds Debian, system Flatpak, user Flatpak, Snap; the first
+failure stops subsequent sources and reports completed and unattempted groups.
+There is no cross-provider rollback. PackageKit restart signals distinguish
+application restarts, session restarts and system restarts.
+
+The libflatpak update flow follows the upstream
+[transaction API](https://docs.flatpak.org/en/latest/libflatpak-api-reference.html).
