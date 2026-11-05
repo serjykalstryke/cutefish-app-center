@@ -49,7 +49,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.2.2"
+#define APP_CENTER_VERSION "0.2.3"
 #endif
 
 static J branding() {
