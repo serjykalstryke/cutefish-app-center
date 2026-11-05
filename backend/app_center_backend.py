@@ -658,7 +658,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.2.2"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.2.3"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -1361,7 +1361,7 @@ def cached_artwork(url):
         return stale
     if not public_https(url, resolve=True):
         return stale
-    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.2.2'})
+    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.2.3'})
     try:
         with urllib.request.build_opener(ArtworkRedirect()).open(request, timeout=6) as response:
             raw = response.read(6 * 1024 * 1024 + 1)
