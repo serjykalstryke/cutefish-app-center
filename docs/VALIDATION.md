@@ -138,3 +138,27 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
 - Corrected AppImageHub's relative media URLs to its database directory, also
   used by catalog screenshots. Broken or absent source artwork still uses the
   generic icon. Imported AppImages retain their separately extracted artwork.
+
+
+## 0.2.3 Launch compatibility after toolkit update — November 5, 2026
+
+- Reproduced the installed 0.2.2 binary's unresolved
+  `std::ios_base::Init::_S_synced_with_stdio` reference after upgrading to
+  `cutefish-toolkit` `1.0~git20261104155126.4cce782-1`.
+- The earlier extracted compiler tree had a broken shared-libstdc++ symlink,
+  allowing a partial static C++ runtime to enter the executable. That binary
+  did not directly require `libstdc++.so.6` and relied on private runtime
+  symbols previously exported by the toolkit. No system library replacement
+  or toolkit downgrade is needed.
+- A fresh Release build with installed `/usr/bin/g++` 14.2.0 links directly to
+  `libstdc++.so.6`. `ldd -r` reports no unresolved libraries/symbols; the private
+  ios_base variable references are absent. The headless app renders and native
+  inventory/search navigation passes against the updated toolkit.
+- Packaging now refuses a binary without a direct shared C++ runtime dependency
+  or with missing libraries/unresolved runtime symbols. The actual broken
+  binary is rejected. Four regression tests compile real ELF fixtures covering
+  valid shared linkage, static linkage, a missing shared library and an
+  unresolved shared-library symbol.
+- All 100 backend/packaging checks and the native home, details and
+  asynchronous-icon smoke checks passed. Packaging verifies the
+  installed system libraries without development loader overrides.
