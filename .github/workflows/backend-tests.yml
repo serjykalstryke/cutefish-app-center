@@ -12,7 +12,7 @@ jobs:
       - name: Install test dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git python3 python3-gi libpackagekit-glib2-18 dbus squashfs-tools util-linux gir1.2-appstream-1.0 g++ binutils
+          apt-get install -y --no-install-recommends ca-certificates git python3 python3-gi libpackagekit-glib2-18 dbus squashfs-tools util-linux gir1.2-appstream-1.0 gir1.2-flatpak-1.0 g++ binutils
       - uses: actions/checkout@v4
       - name: Backend regression tests
         run: |
@@ -23,5 +23,6 @@ jobs:
           python3 tests/test_debian_catalog.py -v
           python3 tests/test_catalog_icons.py -v
           python3 tests/test_packaging.py -v
+          python3 tests/test_management.py -v
       - name: Private PackageKit protocol tests
         run: dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
