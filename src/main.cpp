@@ -11,6 +11,7 @@
 #include <set>
 #include <vector>
 #include <cstdlib>
+#include <cctype>
 
 #include <base/event_loop.h>
 #include <base/json.h>
@@ -49,7 +50,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.2.3"
+#define APP_CENTER_VERSION "0.3.0"
 #endif
 
 static J branding() {
@@ -100,8 +101,17 @@ public:
         m_icon=row->addChild<ui::IconImage>(str(item,"icon"),40);
         m_icon->setFallbackName("application-x-executable"); size(m_icon,40,40);
         auto* text=row->addChild<ui::Column>(); size(text,-1,-1,true); text->setSpacing(4);
-        label(text,str(item,"name"),15,600);
-        auto* sub=label(text,sourceName(item),11); sub->setColor(ui::ColorId::DisabledText);
+        auto* heading=text->addChild<ui::Row>();heading->setSpacing(8);size(heading,-1,-1,true);
+        auto* title=label(heading,str(item,"name"),15,600);title->setMaximumLineCount(1);
+        if(item["update_available"].toBool()){
+            auto* badge=label(heading,item["update_blocked"].toBool()?"Held":"Update",10,650);size(badge,48,-1);badge->setColor(ui::Theme::current().highlight);
+        }
+        auto subtitle=sourceName(item);
+        if(item["management"].toBool()){
+            auto version=str(item,"installed_version");if(!version.empty())subtitle+=" · "+version;
+            auto available=str(item,"update_version");if(!available.empty() && available!=version)subtitle+=" → "+available;
+        }
+        auto* sub=label(text,subtitle,11); sub->setColor(ui::ColorId::DisabledText);
         size(this,-1,72,true);
     }
     void selected(bool selected) { m_selected=selected; requestPaint(); }
@@ -222,7 +232,7 @@ public:
         auto* mark=brandRow->addChild<ui::IconImage>(brand["icon"].toString("org.cutefish.AppCenter"),36);size(mark,36,36);
         label(brandRow,brand["sidebar_name"].toString("App Center"),16,650,true);
         size(sidebar->addChild<ui::View>(),-1,8);
-        for(const auto& entry:std::vector<std::vector<std::string>>{{"Discover","discover","view-grid"},{"Installed","installed","applications-other"},{"Updates","updates","system-software-update"},{"Install from File","files","document-open"}}){
+        for(const auto& entry:std::vector<std::vector<std::string>>{{"Discover","discover","view-grid"},{"Installed","installed","applications-other"},{"Install from File","files","document-open"}}){
             auto* button=sidebar->addChild<NavigationItem>(entry[0],entry[2]);
             button->onClicked=[this,page=entry[1]]{navigate(page);};m_nav.push_back(button);m_navPages.push_back(entry[1]);
         }
@@ -238,12 +248,20 @@ public:
         m_subtitle->setColor(ui::ColorId::DisabledText);
         auto* controls=main->addChild<ui::Row>();m_controls=controls; controls->setSpacing(12); size(controls,-1,38,true);
         m_search=controls->addChild<ui::SearchField>("Search apps"); size(m_search,-1,38,true);
-        m_search->onTextEdited=[this]{if(m_page!="installed" && m_page!="updates"){m_page="discover";m_mode="search";}m_debounce.start(450ms);};
+        m_search->onTextEdited=[this]{if(m_page!="installed"){m_page="discover";m_mode="search";}m_debounce.start(450ms);};
         m_search->onAccepted=[this]{m_debounce.stop();refresh();};
         m_source=controls->addChild<ui::ComboBox>(std::vector<std::string>{"All sources","Debian","Flatpak","Snap","AppImage"});
         m_source->setCurrentIndex(0); size(m_source,150,36);
         m_source->onActivated=[this](int){refresh();};
         m_reload=controls->addChild<ui::Button>("Reload"); m_reload->onClicked=[this]{reloadView();};
+        m_managementControls=main->addChild<ui::Column>();m_managementControls->setSpacing(10);size(m_managementControls,-1,-1,true);
+        m_updateSummary=label(m_managementControls,"Checking for updates…",13,550,true);
+        auto* management=m_managementControls->addChild<ui::Row>();management->setSpacing(10);size(management,-1,36,true);
+        m_softwareView=management->addChild<ui::ComboBox>(std::vector<std::string>{"Applications","All software"});m_softwareView->setCurrentIndex(0);size(m_softwareView,160,36);
+        m_softwareView->onActivated=[this](int){showLibrary();};
+        m_updateFilter=management->addChild<ui::ComboBox>(std::vector<std::string>{"All installed","Updates only"});m_updateFilter->setCurrentIndex(0);size(m_updateFilter,150,36);
+        m_updateFilter->onActivated=[this](int){showLibrary();};management->addStretch();
+        m_updateAll=management->addChild<ui::DialogButton>("Update All",true);m_updateAll->setEnabled(false);m_updateAll->onClicked=[this]{prepareAllUpdates();};
         auto* workspace=main->addChild<ui::Row>(); workspace->setSpacing(18); size(workspace,-1,-1,true,true);
         m_list=workspace->addChild<ui::ScrollView>(); size(m_list,-1,-1,true,true);
         m_list->onScrolled=[this]{m_iconDebounce.start(80ms);};
@@ -271,7 +289,7 @@ public:
             m_featuredLoaded=true;landing();
         }
     }
-    ~AppCenter(){cancelDetails();cancelDiscover();m_app.setMainMenu(nullptr);}
+    ~AppCenter(){cancelDetails();cancelDiscover();cancelIcons();cancelUpdateCheck();m_app.setMainMenu(nullptr);}
     void show(){m_window.show();}
     ui::Window& window(){return m_window;}
     void open(const std::string& path){inspect(path);}
@@ -283,13 +301,16 @@ private:
         m_search->setEnabled(!value);m_source->setEnabled(!value);m_reload->setEnabled(!value);
         m_refresh->setEnabled(!value);m_flatpakRefresh->setEnabled(!value);
         if(value)m_footer->setVisible(true);
+        m_softwareView->setEnabled(!value);m_updateFilter->setEnabled(!value);
+        m_updateAll->setEnabled(!value && m_updatesLoaded && m_updatesComplete && m_updateCount>0);
+        if(!value && m_libraryRenderPending){m_libraryRenderPending=false;m_app.loop().post([this]{if(!m_busy && m_page=="installed")showLibrary();});}
         m_list->setEnabled(!value);
         m_detail->setEnabled(!value);
     }
     void request(const J& data, std::function<void(const J&)> done, bool mutating=false) {
         if(m_preview || m_busy) return;
         cancelDetails();cancelIcons();
-        if(mutating){cancelDiscover();m_featuredLoaded=false;}
+        if(mutating){cancelDiscover();cancelUpdateCheck();m_featuredLoaded=false;m_libraryLoaded=false;m_updatesLoaded=false;}
         m_debounce.stop(); busy(true,mutating);m_status->setText(mutating?"Applying software changes…":"Loading…");
         m_process=std::make_unique<base::Process>(&m_app.loop());
         m_process->setStandardInput(data.serialize()+"\n");
@@ -362,7 +383,7 @@ private:
     }
     void navigate(const std::string& page) {
         if(m_busy)return;
-        cancelDetails();m_page=page;m_mode=page=="installed"?"installed":page=="updates"?"updates":"search";
+        cancelDetails();m_userSelected=false;if(page!="installed")cancelUpdateCheck();m_page=page;m_mode=page=="installed"?"installed":"search";
         m_search->setText("");m_source->setCurrentIndex(0);m_reviewedFile.clear();refresh();
     }
     void updateNavigation() {
@@ -370,6 +391,7 @@ private:
     }
     void reloadView() {
         if(m_busy)return;
+        if(m_page=="installed"){m_updatesLoaded=false;loadLibrary(true);return;}
         cancelDiscover();m_featuredLoaded=false;refresh();
     }
     void resetPage() {
@@ -380,17 +402,142 @@ private:
     void refresh() {
         if(m_busy)return;
         updateNavigation();
-        const bool catalogPage=m_page=="discover" || m_page=="installed" || m_page=="updates";
-        m_controls->setVisible(catalogPage);m_metadataControls->setVisible(m_page=="updates");
-        m_title->setText(m_page=="files"?"Install from File":m_page=="about"?"About":m_page=="installed"?"Installed":m_page=="updates"?"Updates":"Discover");
+        const bool catalogPage=m_page=="discover" || m_page=="installed";
+        m_controls->setVisible(catalogPage);m_metadataControls->setVisible(false);m_managementControls->setVisible(m_page=="installed");
+        m_reload->setText(m_page=="installed"?"Check for Updates":"Reload");
+        m_title->setText(m_page=="files"?"Install from File":m_page=="about"?"About":m_page=="installed"?"Installed":"Discover");
         m_subtitle->setVisible(m_page!="about" && !(m_page=="discover" && m_search->text().size()<2));
         if(m_page=="files"){m_subtitle->setText("Review a .deb or AppImage before installing.");filePage();return;}
         if(m_page=="about"){aboutPage();return;}
         if(m_page=="discover" && m_search->text().size()<2){landing();loadDiscover();return;}
-        m_subtitle->setText(m_page=="discover"?"Find apps across your configured software sources.":m_page=="installed"?"Manage installed applications and packages.":"Available updates from your software sources.");
+        m_subtitle->setText(m_page=="discover"?"Find apps across your configured software sources.":"Manage installed apps and keep all software up to date.");
+        if(m_page=="installed"){
+            m_source->setVisible(true);m_reload->setVisible(true);m_footer->setVisible(true);
+            if(!m_libraryLoaded)loadLibrary();else{showLibrary();if(!m_updatesLoaded && !m_updateProcess)startUpdateCheck();}
+            return;
+        }
         m_source->setVisible(true);m_reload->setVisible(true);m_footer->setVisible(true);
         static const std::vector<std::string> sources={"all","deb","flatpak","snap","appimage"};
         request(J::object({{"op","list"},{"mode",m_mode},{"query",m_search->text()},{"source",sources.at(std::max(0,m_source->currentIndex()))}}),[this](const J& result){populate(result);});
+    }
+    void cancelUpdateCheck() {
+        ++m_updateGeneration;
+        if(m_updateProcess){m_updateProcess->onFinished={};m_updateProcess->onStandardOutput={};m_updateProcess.reset();}
+    }
+    void loadLibrary(bool check=false) {
+        if(m_busy)return;
+        cancelUpdateCheck();m_updateItems.clear();m_updateWarnings.clear();m_updatesLoaded=false;m_updatesComplete=false;
+        request(J::object({{"op","library"}}),[this,check](const J& result){
+            m_libraryItems=result["items"].toArray();m_libraryWarnings=result["warnings"].toArray();m_libraryLoaded=true;
+            showLibrary();startUpdateCheck(check);
+        });
+    }
+    void startUpdateCheck(bool fresh=false) {
+        cancelUpdateCheck();m_updatesLoaded=false;m_updatesComplete=false;
+        const auto generation=m_updateGeneration;
+        m_updateSummary->setText(fresh?"Refreshing sources and checking for updates…":"Checking for updates…");m_updateAll->setEnabled(false);
+        m_updateProcess=std::make_unique<base::Process>(&m_app.loop());
+        m_updateProcess->setStandardInput(J::object({{"op","update_inventory"},{"refresh",fresh}}).serialize()+"\n");
+        m_updateProcess->onFinished=[this,generation](int,bool){
+            auto output=m_updateProcess->standardOutput();
+            m_app.loop().post([this,generation,output]{
+                if(generation!=m_updateGeneration)return;
+                m_updateProcess.reset();m_updatesLoaded=true;J result;
+                size_t pos=0;while(pos<output.size()){
+                    auto end=output.find('\n',pos);if(end==std::string::npos)end=output.size();
+                    auto value=J::parse(output.substr(pos,end-pos));if(value && str(*value,"event")=="result")result=*value;pos=end+1;
+                }
+                m_updateItems=result["items"].toArray();m_updateWarnings=result["warnings"].toArray();
+                m_updatesComplete=result["ok"].toBool() && result["complete"].toBool();
+                if(!result["ok"].toBool())m_updateWarnings.push_back(str(result,"error").empty()?"Update checking did not complete. Try Check for Updates.":str(result,"error"));
+                if(m_page=="installed"){
+                    if(!m_busy)showLibrary();else m_libraryRenderPending=true;
+                }
+            });
+        };
+        std::string backend=APP_CENTER_BACKEND;if(const char* path=std::getenv("CUTEFISH_APP_CENTER_BACKEND"))backend=path;
+        if(!m_updateProcess->start("/usr/bin/python3",{backend})){
+            m_updateProcess.reset();m_updatesLoaded=true;m_updateWarnings={"Could not start update checking."};showLibrary();
+        }
+    }
+    void showLibrary() {
+        if(m_page!="installed" || !m_libraryLoaded)return;
+        std::map<std::string,J> records;
+        for(auto item:m_libraryItems){item.insert("management",true);item.insert("update_available",false);records[str(item,"install_key")]=item;}
+        for(const auto& update:m_updateItems){
+            const auto key=str(update,"install_key");
+            if(!records.contains(key)){auto item=update;item.insert("management",true);records[key]=item;}
+            auto& item=records[key];
+            for(auto field:{"package_id","update_available","update_blocked","update_version","update_commit","revision","installed_revision"})
+                if(!update[field].isNull())item.insert(field,update[field]);
+        }
+        size_t eligible=0,appUpdates=0,blocked=0;
+        for(const auto& update:m_updateItems){
+            if(update["update_blocked"].toBool()){++blocked;continue;}
+            ++eligible;auto it=records.find(str(update,"install_key"));
+            if(it!=records.end() && it->second["is_application"].toBool())++appUpdates;
+        }
+        m_updateCount=eligible;
+        auto summary=!m_updatesLoaded?"Checking for updates…":!m_updatesComplete?"Some update sources are unavailable":eligible==0?(blocked?"No installable updates available":"No updates available"):std::to_string(eligible)+" updates available · "+std::to_string(appUpdates)+" applications · "+std::to_string(eligible-appUpdates)+" system components";
+        if(blocked)summary+=" · "+std::to_string(blocked)+" held or blocked";
+        if(m_restartRequired)summary+=" · Restart required";
+        m_updateSummary->setText(summary);
+        m_updateAll->setText(eligible?"Update All ("+std::to_string(eligible)+")":"Update All");
+        m_updateAll->setEnabled(!m_busy && m_updatesLoaded && m_updatesComplete && eligible>0);
+        m_updateAll->setToolTip("Review updates for all software and sources, including system packages and runtimes hidden by the current filters.");
+        static const std::vector<std::string> sources={"all","deb","flatpak","snap","appimage"};
+        const auto source=sources.at(std::max(0,m_source->currentIndex()));
+        auto lower=[](std::string value){std::transform(value.begin(),value.end(),value.begin(),[](unsigned char c){return char(std::tolower(c));});return value;};
+        const auto query=lower(m_search->text());J::Array visible;
+        size_t hidden=0;
+        for(auto& [key,item]:records){
+            if(source!="all" && str(item,"source")!=source)continue;
+            if(m_softwareView->currentIndex()==0 && !item["is_application"].toBool()){++hidden;continue;}
+            if(m_updateFilter->currentIndex()==1 && !item["update_available"].toBool())continue;
+            if(!query.empty() && lower(str(item,"name")+" "+str(item,"id")+" "+str(item,"summary")).find(query)==std::string::npos)continue;
+            visible.push_back(item);
+        }
+        std::stable_sort(visible.begin(),visible.end(),[&](const J& a,const J& b){
+            if(a["update_available"].toBool()!=b["update_available"].toBool())return a["update_available"].toBool();
+            return std::make_pair(lower(str(a,"name")),str(a,"install_key"))<std::make_pair(lower(str(b,"name")),str(b,"install_key"));
+        });
+        auto warnings=m_libraryWarnings;warnings.insert(warnings.end(),m_updateWarnings.begin(),m_updateWarnings.end());
+        std::string note=hidden?std::to_string(hidden)+" system components available under All software.":"";
+        populate(J::object({{"items",visible},{"warnings",warnings},{"message",note}}));
+    }
+    void prepareAllUpdates() {
+        if(m_busy || !m_updatesLoaded || !m_updatesComplete || m_updateCount==0)return;
+        request(J::object({{"op","plan_all_updates"}}),[this](const J& result){
+            J plan=result["plan"];
+            if(plan["groups"].size()==0){message("Software updates","No updates remain to apply.");m_libraryLoaded=false;refresh();return;}
+            m_review=std::make_unique<ui::DialogWindow>(&m_window,"Review all software updates",690);
+            auto* content=m_review->setContent<ui::Column>();content->setSpacing(14);content->setMargins(ui::Margins::all(20));
+            label(content,"Update all software",22,700,true);
+            label(content,str(plan,"note"),12,400,true);
+            auto* scroll=content->addChild<ui::ScrollView>();size(scroll,-1,380,true);
+            auto* changes=scroll->setContent<ui::Column>();changes->setSpacing(10);
+            for(const auto& group:plan["groups"].toArray()){
+                label(changes,str(group,"name"),16,650,true);label(changes,str(group,"note"),11,400,true);
+                for(const auto& change:group["changes"].toArray()){
+                    auto name=str(change,"name");if(name.empty())name=str(change,"id");
+                    auto version=str(change,"version");label(changes,str(change,"info")+"  "+name+(version.empty()?"":" → "+version),12,400,true);
+                    if(str(change,"id")!=name)label(changes,str(change,"id"),11,400,true);
+                }
+            }
+            if(plan["blocked_count"].toDouble()>0)label(changes,"Held or blocked updates are left unchanged.",12,400,true);
+            auto* buttons=content->addChild<ui::Row>();buttons->setSpacing(12);buttons->addStretch();
+            auto* cancel=buttons->addChild<ui::Button>("Cancel");cancel->onClicked=[this]{m_review->close();};
+            auto* confirm=buttons->addChild<ui::DialogButton>("Apply Updates",true);
+            confirm->onClicked=[this,plan]{
+                m_review->close();
+                request(J::object({{"op","apply_all_updates"},{"plan",plan}}),[this](const J& result){
+                    m_restartRequired=m_restartRequired || result["restart"].toBool();
+                    message(result["errors"].size()?"Updates need attention":"Software updates",str(result,"message"));
+                    m_libraryLoaded=false;m_updatesLoaded=false;m_variants.clear();refresh();
+                },true);
+            };
+            m_review->show();
+        });
     }
     void searchFor(const std::string& query) {
         if(m_busy)return;
@@ -501,6 +648,7 @@ private:
         label(panel,"Downloaded .deb files get a dependency review. Imported AppImages get their own menu entry.",13,400,true);
     }
     std::string groupKey(const J& item) {
+        if(m_page=="installed")return str(item,"install_key");
         std::string id=str(item,"app_id");
         if(id.empty() && str(item,"source")=="flatpak")id=str(item,"id");
         if(!id.empty()) {
@@ -511,6 +659,8 @@ private:
     }
     void populate(const J& result) {
         cancelIcons();
+        std::string priorKey;J priorDetails;
+        if(m_page=="installed" && m_userSelected && m_selectedVariant<m_variants.size()){priorKey=str(m_variants[m_selectedVariant],"install_key");priorDetails=m_variants[m_selectedVariant];}
         m_detail->setVisible(true);m_footer->setVisible(true);
         m_groups.clear();m_rows.clear();
         std::map<std::string,size_t> keys;
@@ -522,14 +672,28 @@ private:
         auto* col=m_list->setContent<ui::Column>(); col->setSpacing(7);
         if(m_groups.empty()) {
             auto* empty=col->addChild<Panel>();
-            label(empty,m_mode=="updates"?"No updates reported":"No results",21,650,true);
+            label(empty,m_page=="installed"?(m_updateFilter->currentIndex()==1?"No updates in this view":"No applications in this view"):"No results",21,650,true);
             label(empty,"Check the source messages below, or try another search.",13,400,true);
             detailEmpty();m_detail->setVisible(false);
         }
+        size_t selected=0;bool ordinary=false;
         for(size_t i=0;i<m_groups.size();i++) {
+            if(m_page=="installed"){
+                bool pending=m_groups[i][0]["update_available"].toBool();
+                if(i==0 && pending)label(col,"Updates available",14,650);
+                if(!pending && !ordinary){label(col,"Installed",14,650);ordinary=true;}
+                if(str(m_groups[i][0],"install_key")==priorKey){
+                    selected=i;
+                    if(priorDetails["details_loaded"].toBool()){
+                        for(auto field:{"update_available","update_blocked","update_version","update_commit","package_id","installed_version"})
+                            if(!m_groups[i][0][field].isNull())priorDetails.insert(field,m_groups[i][0][field]);
+                        m_groups[i][0]=priorDetails;
+                    }
+                }
+            }
             auto* row=col->addChild<AppRow>(m_groups[i][0]);
             if(m_groups[i].size()>1)row->setToolTip(std::to_string(m_groups[i].size())+" source or installation choices");
-            row->onClicked=[this,i]{select(i);};m_rows.push_back(row);
+            row->onClicked=[this,i]{if(m_page=="installed")m_userSelected=true;select(i);};m_rows.push_back(row);
         }
         std::string warnings;
         for(const auto& w:result["warnings"].toArray()){if(!warnings.empty())warnings+="\n";warnings+=w.toString();}
@@ -538,7 +702,7 @@ private:
         if(!warnings.empty())count+=" · some sources unavailable";
         if(!str(result,"message").empty())count+=" · "+str(result,"message");
         m_status->setText(count);
-        if(!m_groups.empty())select(0);
+        if(!m_groups.empty())select(selected);
         m_iconDebounce.start(1ms);
     }
     void cancelIcons() {
@@ -613,12 +777,15 @@ private:
         });
         file->onAboutToShow=[this,file,open,launch]{file->setItemEnabled(open,!m_busy && !m_preview);file->setItemEnabled(launch,!m_busy && !m_preview && m_selectedVariant<m_variants.size() && m_variants[m_selectedVariant]["can_open"].toBool());};
         auto* view=m_mainMenu->addSubmenu("View");
-        for(const auto& entry:std::vector<std::pair<std::string,std::string>>{{"Discover","discover"},{"Installed","installed"},{"Updates","updates"},{"Install from File","files"}}){view->addItem(entry.first,[this,page=entry.second]{navigate(page);});}
+        for(const auto& entry:std::vector<std::pair<std::string,std::string>>{{"Discover","discover"},{"Installed","installed"},{"Install from File","files"}}){view->addItem(entry.first,[this,page=entry.second]{navigate(page);});}
         view->addSeparator();
         auto search=[this]{if(m_busy)return;if(m_page=="files" || m_page=="about")navigate("discover");m_search->setFocus();};
         auto find=view->addItem("Search",search);view->setItemKeyEquivalent(find,"f",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'f',search);
         auto reload=view->addItem("Reload",[this]{reloadView();});view->setItemKeyEquivalent(reload,"r",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'r',[this]{reloadView();});
         auto* software=m_mainMenu->addSubmenu("Software");
+        software->addItem("Check for Updates",[this]{if(!m_busy){if(m_page!="installed")navigate("installed");reloadView();}});
+        auto all=software->addItem("Update All",[this]{prepareAllUpdates();});
+        software->onAboutToShow=[this,software,all]{software->setItemEnabled(all,m_page=="installed" && !m_busy && m_updatesLoaded && m_updatesComplete && m_updateCount>0);};
         software->addItem("Refresh Debian Catalog",[this]{if(!m_busy)request(J::object({{"op","refresh"}}),[this](const J&){refresh();},true);});
         software->addItem("Refresh Flatpak Catalog",[this]{if(!m_busy)request(J::object({{"op","refresh_flatpak"}}),[this](const J&){refresh();},true);});
         auto* help=m_mainMenu->addSubmenu("Help");help->setRole(ui::MenuRole::Help);
@@ -721,11 +888,17 @@ private:
                 auto* open=actions->addChild<ui::DialogButton>("Open",true);size(open,-1,40,true);open->setEnabled(!m_preview);open->onClicked=[this,item]{launchApp(item);};
             }
             bool installed=item["installed"].toBool();
-            std::string action=installed?(m_mode=="updates"?"update":"remove"):"install";
+            std::string action=installed?(item["update_available"].toBool()?"update":"remove"):"install";
             std::string text=action=="remove"?"Remove":action=="update"?"Update":str(item,"source")=="appimage"?"Import AppImage":"Install";
             auto* button=actions->addChild<ui::DialogButton>(text,!item["can_open"].toBool());size(button,-1,40,true);
-            button->setDestructive(action=="remove");button->setEnabled(!m_preview && !item["protected"].toBool());button->onClicked=[this,item,action]{prepare(item,action);};
-            if(item["protected"].toBool())label(panel,"Protected system package",12,600,true);
+            button->setDestructive(action=="remove");button->setEnabled(!m_preview && !(action=="remove" && (item["protected"].toBool() || str(item,"ref_kind")=="runtime")) && !(action=="update" && item["update_blocked"].toBool()));button->onClicked=[this,item,action]{prepare(item,action);};
+            if(installed && action=="update"){
+                auto* remove=actions->addChild<ui::Button>("Remove");size(remove,-1,40,true);remove->setEnabled(!m_preview && !item["protected"].toBool() && str(item,"ref_kind")!="runtime");
+                remove->onClicked=[this,item]{prepare(item,"remove");};
+            }
+            if(item["update_blocked"].toBool())label(panel,"This update is held or blocked by the system package service.",12,500,true);
+            if(str(item,"ref_kind")=="runtime")label(panel,"Shared runtime — removal is managed by Flatpak.",12,400,true);
+            if(item["protected"].toBool())label(panel,str(item,"source")=="deb"?"Protected system package":"Protected system component",12,600,true);
         }
         if(!item["details_loaded"].toBool() && !m_preview){label(panel,"Loading app details…",12,400,true);return;}
         if(!str(item,"details_note").empty())label(panel,str(item,"details_note"),12,400,true);
@@ -738,7 +911,7 @@ private:
         }
         label(panel,"Details",16,650);
         for(auto field:{"installed_version","version","branch","arch","architecture","license","maintainer","catalog_author","confinement"}){
-            auto value=str(item,field);if(value.empty())continue;
+            auto value=std::string(field)=="version" && !str(item,"update_version").empty()?str(item,"update_version"):str(item,field);if(value.empty())continue;
             std::string name=std::string(field)=="installed_version"?"Installed version":std::string(field)=="version"?"Available version":std::string(field)=="branch"?"Branch":std::string(field)=="license"?"License":std::string(field)=="maintainer"?"Package maintainer":std::string(field)=="catalog_author"?"Catalog author":std::string(field)=="confinement"?"Confinement":"Architecture";
             if(std::string(field)=="version" && value==str(item,"installed_version"))continue;
             label(panel,name+"  "+value,12,400,true);
@@ -770,7 +943,8 @@ private:
                 request(J::object({{"op","apply"},{"plan",plan}}),[this](const J& result){
                     auto text=str(result,"message");
                     m_status->setText(text);message("Software changes complete",text);
-                    m_variants.clear();detailEmpty();refresh();
+                    m_restartRequired=m_restartRequired || result["restart"].toBool();
+                    m_libraryLoaded=false;m_updatesLoaded=false;m_variants.clear();detailEmpty();refresh();
                 },true);
             };
             m_review->show();
@@ -779,6 +953,13 @@ private:
     ui::Application& m_app;
     bool m_preview=false,m_busy=false,m_mutating=false;
     std::string m_mode="search",m_page="discover",m_buffer,m_displayName,m_author,m_brandIcon,m_distribution,m_projectUrl,m_reviewedFile;
+    J::Array m_libraryItems,m_libraryWarnings,m_updateItems,m_updateWarnings;
+    bool m_libraryLoaded=false,m_updatesLoaded=false,m_updatesComplete=false,m_libraryRenderPending=false,m_restartRequired=false,m_userSelected=false;
+    size_t m_updateCount=0;unsigned long m_updateGeneration=0;
+    ui::Column* m_managementControls;
+    ui::Label* m_updateSummary;
+    ui::ComboBox *m_softwareView,*m_updateFilter;
+    ui::DialogButton* m_updateAll;
     J::Array m_featured;bool m_featuredLoaded=false;size_t m_featuredPage=0;
     unsigned long m_discoverGeneration=0;
     size_t m_selectedVariant=0;
@@ -800,7 +981,7 @@ private:
     std::vector<AppRow*> m_rows;
     std::vector<std::vector<J>> m_groups;
     std::vector<J> m_variants;
-    std::unique_ptr<base::Process> m_process,m_detailProcess,m_discoverProcess,m_iconProcess;
+    std::unique_ptr<base::Process> m_process,m_detailProcess,m_discoverProcess,m_iconProcess,m_updateProcess;
     base::Timer m_debounce,m_iconDebounce;
     std::unique_ptr<ui::FileChooser> m_chooser;
     std::unique_ptr<ui::ConfirmDialog> m_message;
