@@ -873,7 +873,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.3.2"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.3.3"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -1002,8 +1002,8 @@ def pk_args(target, action, flags):
             raise AppCenterError("The local package changed. Open it again before installing.")
         return pk, "InstallFiles", "(tas)", (flags & ~2, [checked["path"]])
     if action == "update":
-        available, _ = pk.transaction("GetUpdates", "(t)", (0,))
-        matches = [p["id"] for p in available if p["id"] == target.get("package_id")]
+        matches = [package['id'] for package, _ in debian_update_candidates(pk)
+                   if package['id'] == target.get('package_id') and package.get('info') != 'blocked']
         if len(matches) != 1:
             raise AppCenterError("This update changed or is no longer available. Reload updates and try again.")
         pid = matches[0]
@@ -1025,6 +1025,8 @@ def plan(target, action):
     if source == "deb":
         pk, method, signature, args = pk_args(target, action, 4 | 2)
         changes, _ = pk.transaction(method, signature, args)
+        if action == 'update' and not changes:
+            raise AppCenterError('Debian prepared no changes for this update. Check for updates again.')
         protected = {i["id"].split(":")[0] for i in dpkg_installed() if i["protected"]}
         if any(c["info"] in ("remove", "removing", "obsolete", "obsoleting") and c["id"].split(";")[0] in protected for c in changes):
             raise AppCenterError("This operation would remove an essential or protected system package.")
@@ -1389,6 +1391,8 @@ def apply(approved):
         if source == "deb":
             pk, method, sig, args = pk_args(target, action, 2)
             _, restarts = pk.transaction(method, sig, args)
+            if action == 'update':
+                verify_debian_updates(args[1])
         elif source == "flatpak":
             if action == 'update':
                 group = current['flatpak_group']
@@ -1436,10 +1440,7 @@ def inventory_provider(source, mode, query):
         if mode == "search":
             return deb_search(query)
         if mode == "updates":
-            packages, _ = PackageKit().transaction("GetUpdates", "(t)", (0,))
-            metadata = appstream()
-            return [dict(dict(source="deb", id=x["id"].split(";")[0], package_id=x["id"], name=x["id"].split(";")[0], version=x["id"].split(";")[1], summary=x["summary"], installed=True, scope="system", icon="application-x-deb"),
-                         **metadata.get(x["id"].split(";")[0].split(":")[0], {})) for x in packages]
+            return management_provider('deb', updates=True)
         metadata = appstream()
         return [dict(x, **metadata.get(x["id"].split(":")[0], {})) for x in dpkg_installed()]
     if source == "flatpak":
@@ -1462,6 +1463,63 @@ def software_key(item):
     if source == 'flatpak':
         return json.dumps([source, item['scope'], item.get('ref_kind', 'app'), item['id'], item.get('arch', ''), item['branch'], item['remote']], separators=(',', ':'))
     return json.dumps([source, item.get('scope', 'system'), item['id']], separators=(',', ':'))
+
+
+def debian_installations():
+    installed = {}
+    for item in dpkg_installed():
+        installed.setdefault(item['id'].split(':')[0], []).append(item)
+    return installed
+
+
+def debian_package_installation(package_id, installed):
+    fields = package_id.split(';')
+    if len(fields) != 4 or not PACKAGE.fullmatch(fields[0]) or not fields[1] or not fields[2]:
+        return None
+    name, _, arch, _ = fields
+    records = installed.get(name.split(':')[0], [])
+    exact = next((item for item in records if item['architecture'] == arch), None)
+    if exact is None and len(records) == 1 and 'all' in (arch, records[0]['architecture']):
+        # A package may switch between architecture-specific and Architecture: all.
+        return records[0]
+    return exact
+
+
+def debian_version_compare(left, operator, right):
+    result = subprocess.run(['dpkg', '--compare-versions', left, operator, right],
+                            capture_output=True, timeout=5, env=ENV)
+    if result.returncode not in (0, 1):
+        raise AppCenterError('Could not compare Debian package versions.')
+    return result.returncode == 0
+
+
+def debian_update_candidates(pk):
+    packages, _ = pk.transaction('GetUpdates', '(t)', (0,))
+    installed = debian_installations()
+    for package in packages:
+        item = debian_package_installation(package['id'], installed)
+        if item is None:
+            continue
+        version = package['id'].split(';')[1]
+        # A repository can contain a separate build with the same version.
+        # Update All operates on upgrades, so only show newer Debian versions.
+        if version != item['version'] and debian_version_compare(version, 'gt', item['version']):
+            yield package, item
+
+
+def verify_debian_updates(package_ids):
+    installed = debian_installations()
+    missing = []
+    for package_id in package_ids:
+        item = debian_package_installation(package_id, installed)
+        name, expected, arch, _ = package_id.split(';')
+        if item is None or (item['version'] != expected and not debian_version_compare(item['version'], 'ge', expected)):
+            missing.append(f'{name} ({arch}, expected {expected})')
+    if missing:
+        names = ', '.join(missing[:5])
+        if len(missing) > 5:
+            names += f' and {len(missing) - 5} more'
+        raise AppCenterError(f'Debian did not install the reviewed versions for {names}. Check for updates again.')
 
 
 def management_sources():
@@ -1560,18 +1618,13 @@ def management_provider(source, updates=False, refresh=False):
             pk = PackageKit()
             if refresh:
                 pk.transaction('RefreshCache', '(b)', (True,))
-            packages, _ = pk.transaction('GetUpdates', '(t)', (0,))
             metadata = appstream()
             result = []
-            for package in packages:
-                fields = package['id'].split(';')
-                if len(fields) != 4 or not PACKAGE.fullmatch(fields[0]):
-                    continue
-                item = dict(source='deb', id=fields[0], scope='system', installed=True, architecture=fields[2],
-                            package_id=package['id'], name=fields[0], summary=package['summary'], version=fields[1],
-                            update_version=fields[1], update_available=True, update_blocked=package.get('info') == 'blocked',
-                            icon='application-x-deb')
-                item.update(metadata.get(fields[0].split(':')[0], {}))
+            for package, installed in debian_update_candidates(pk):
+                name, version, _, _ = package['id'].split(';')
+                item = dict(installed, **metadata.get(name.split(':')[0], {}))
+                item.update(package_id=package['id'], version=version, installed_version=installed['version'],
+                            update_version=version, update_available=True, update_blocked=package.get('info') == 'blocked')
                 item['is_application'] = bool(item.get('desktop_app'))
                 item['install_key'] = software_key(item)
                 result.append(item)
@@ -1579,7 +1632,7 @@ def management_provider(source, updates=False, refresh=False):
         metadata, desktops = appstream(), debian_desktop_packages()
         items = dpkg_installed()
         for item in items:
-            item.update(metadata.get(item['id'].split(':')[0], {}))
+            item.update({k: v for k, v in metadata.get(item['id'].split(':')[0], {}).items() if k != 'version'})
             desktop = desktops.get(item['id']) or desktops.get(item['id'].split(':')[0])
             if desktop:
                 for key, value in desktop.items():
@@ -1656,6 +1709,8 @@ def debian_update_group(items):
     if not ids:
         return None
     changes, _ = PackageKit().transaction('UpdatePackages', '(tas)', (6, ids))
+    if not changes:
+        raise AppCenterError('Debian prepared no changes for these updates. Check for updates again.')
     check_protected_changes(changes)
     labels = {i['package_id']: i for i in items}
     for change in changes:
@@ -1856,6 +1911,7 @@ def apply_all_updates(approved):
                         raise AppCenterError('Debian dependency changes no longer match the review.')
                     _, restart = PackageKit().transaction('UpdatePackages', '(tas)', (2, group['targets']), report=report)
                     restarts.extend(restart)
+                    verify_debian_updates(group['targets'])
                 elif group['source'] == 'flatpak':
                     flatpak_update_group(group['scope'], group['targets'], approved=group, report=report)
                 else:
@@ -2041,7 +2097,7 @@ def cached_artwork(url):
         return stale
     if not public_https(url, resolve=True):
         return stale
-    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.3.2'})
+    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.3.3'})
     try:
         with urllib.request.build_opener(ArtworkRedirect()).open(request, timeout=6) as response:
             raw = response.read(6 * 1024 * 1024 + 1)
@@ -2292,7 +2348,7 @@ def app_details(target, artwork=True):
         item.update(summary=summary or item.get('summary', ''), description=body or summary,
                     version=fields.get('Version', item.get('version', '')), maintainer=fields.get('Maintainer', ''),
                     homepage=fields.get('Homepage', ''), architecture=fields.get('Architecture', ''))
-        item.update({k: v for k, v in metadata.items() if v})
+        item.update({k: v for k, v in metadata.items() if v and (k != 'version' or not item['version'])})
         installed_version = deb_installed(ident) if not target.get('path') else ''
         item.update(installed=bool(installed_version), installed_version=installed_version)
     elif source == 'flatpak':
