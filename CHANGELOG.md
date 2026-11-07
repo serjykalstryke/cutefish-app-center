@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 — 2026-11-06
+
+- Present one search entry per application across Debian, Flatpak, Snap and AppImage, with available formats listed on the card.
+- Extend identity matching with desktop/common catalog IDs and unambiguous exact name/package aliases, while keeping unrelated namesakes and distinct editions separate.
+- Add installation status to source choices, favor existing installations, and remember the selected source during the session.
+- Keep the application title stable while source-specific metadata, versions and actions change; preserve every exact installation target.
+- Apply search limits to application groups so included apps retain all their source choices.
+- Add cross-provider grouping and native source-switching regressions.
+
 ## 0.3.0 — 2026-11-05
 
 - Combine Installed and Updates into one panel, with update rows first, application-only defaults, All software and Updates only filters.

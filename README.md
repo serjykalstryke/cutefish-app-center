@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.3.0_amd64.deb
-sudo apt install ./cutefish-app-center_0.3.0_amd64.deb
+    --output cutefish-app-center_0.3.1_amd64.deb
+sudo apt install ./cutefish-app-center_0.3.1_amd64.deb
 cutefish-app-center
 ```
 
@@ -157,9 +157,24 @@ cutefish-app-center ~/Downloads/example.deb
 cutefish-app-center ~/Downloads/Example.AppImage
 ```
 
-Matching Debian AppStream and Flatpak IDs share a detail page with a source
-selector. Flatpak scope, architecture, branch and remote remain attached to
-each choice. Search excludes Flatpak runtime extensions.
+Search shows one entry per application, with its available formats listed on
+the card. Use the **Software source** dropdown on the detail card to choose
+Debian, Flatpak, Snap or AppImage. App Center selects an existing installation
+first. For a new app it prefers Debian, then Flatpak, Snap and AppImage. The
+dropdown shows availability and installation status and remembers your choice
+when you return to that application during the session.
+
+Common catalog/desktop identifiers join packages for the same application.
+Exact name/package aliases fill metadata gaps only where they do not conflict
+with other known identities. Chrome and Chromium, ESR and nightly editions, and
+unrelated apps with the same name remain distinct. Missing or ambiguous
+metadata can still leave separate entries.
+
+The application title stays consistent when switching sources. Publisher,
+version, screenshots, installation status and actions belong to the selected
+source. Flatpak scope, architecture, branch and remote remain attached to each
+choice. Installed retains separate installations for management, and Update All
+continues to cover every configured provider. Search excludes Flatpak runtimes.
 
 In Installed, application classification uses AppStream desktop metadata or
 visible exported launchers, rather than package-name rules. Separate Flatpak
@@ -263,7 +278,13 @@ CUTEFISH_APP_CENTER_BACKEND="$PWD/backend/app_center_backend.py" \
 ./build/cutefish-app-center-home-smoke
 ./build/cutefish-app-center-icons-smoke
 ./build/cutefish-app-center-management-smoke
+./build/cutefish-app-center-search-smoke
 ```
+
+The search smoke test uses a private cross-provider fixture to check one app
+card, exact source choices, installed-source preference, source-bound actions,
+remembered selections and cancellation of outdated details. It never installs
+or launches software. Its `--live` mode renders the actual Firefox search.
 
 The management smoke test uses a private provider to check application filtering,
 update sorting, global review scope, cancellation, partial-source errors and
