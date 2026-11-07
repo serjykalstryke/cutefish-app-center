@@ -291,6 +291,160 @@ def ranked_search(items, query, limit=LIMIT):
     return [item for _, item in scored[:limit]]
 
 
+def application_ids(item):
+    """Catalog identity is a browsing hint, never a package transaction target."""
+    values = [item.get('app_id', '')] + item.get('desktop_ids', []) + item.get('common_ids', [])
+    if item['source'] == 'flatpak':
+        values.append(item['id'])
+    return {v.casefold().removesuffix('.desktop') for v in values
+            if isinstance(v, str) and APPID.fullmatch(v)}
+
+
+def application_title_aliases(value, legacy_id=False):
+    name = search_text(value)
+    names = {name}
+    # Presentation suffixes do not distinguish a separate application. Edition
+    # words (ESR, beta, nightly, etc.) remain part of the name.
+    suffixes = (' web browser', ' desktop application', ' desktop client')
+    if legacy_id:
+        suffixes += (' browser',)
+    for suffix in suffixes:
+        if name.endswith(suffix) and len(name) > len(suffix):
+            names.add(name[:-len(suffix)])
+            break
+    return {n.replace(' ', '') for n in names if n}
+
+
+def application_aliases(item):
+    name = search_text(item.get('name', ''))
+    aliases = application_title_aliases(name)
+    if item['source'] in ('deb', 'snap'):
+        ident = item['id'].split(':')[0]
+        if ident.endswith('-stable'):
+            ident = ident[:-7]
+        aliases.add(search_text(ident).replace(' ', ''))
+    # A descriptive final component (com.brave.Browser) is not a project name.
+    generic = {'app', 'application', 'browser', 'desktop', 'client', 'player', 'editor'}
+    for ident in application_ids(item):
+        parts = ident.split('.')
+        token = search_text(parts[-1]).replace(' ', '')
+        if len(parts) > 2 and token in generic:
+            token = search_text(parts[-2]).replace(' ', '')
+        if len(token) >= 4 and any(token == word for word in name.split()):
+            aliases.add(token)
+    return {a for a in aliases if len(a) >= 3}
+
+
+def search_variant_key(item):
+    return tuple(str(item.get(k, '')) for k in
+                 ('source', 'id', 'scope', 'remote', 'branch', 'arch', 'architecture', 'channel', 'path', 'catalog'))
+
+
+def group_search_results(items, limit=300):
+    """Group application presentations; retain every exact installation choice.
+
+    Explicit AppStream/desktop/common IDs join first. Exact name/package aliases
+    fill gaps only where they identify one catalog identity unambiguously. Two
+    unrelated reverse-DNS identities sharing a title remain separate. No fuzzy
+    matching, app-name whitelist, or network lookup is needed per result.
+    """
+    unique = {}
+    for item in items:
+        key = search_variant_key(item)
+        if key not in unique:
+            unique[key] = dict(item)
+        elif item.get('installed'):
+            unique[key]['installed'] = True
+    records = list(unique.values())
+    parents = list(range(len(records)))
+    def root(n):
+        while parents[n] != n:
+            parents[n] = parents[parents[n]]
+            n = parents[n]
+        return n
+    def join(a, b):
+        a, b = root(a), root(b)
+        if a != b:
+            parents[max(a, b)] = min(a, b)
+    ids = [application_ids(i) for i in records]
+    known = {}
+    for n, values in enumerate(ids):
+        for ident in sorted(values):
+            if ident in known:
+                join(n, known[ident])
+            else:
+                known[ident] = n
+    aliases, anchored = {}, set()
+    for n, item in enumerate(records):
+        # A library/helper with no application metadata is still searchable by
+        # package name, but must not become an alternative installer for an app.
+        if item['source'] == 'deb' and not (item.get('desktop_app') or item.get('is_application')):
+            continue
+        names = application_aliases(item)
+        edition_text = item.get('name', '') + ' ' + (item['id'] if item['source'] in ('deb', 'snap') else '')
+        edition = tuple(sorted(set(search_text(edition_text).split()) & {'esr', 'beta', 'nightly', 'unstable', 'canary'}))
+        for alias in names:
+            aliases.setdefault((edition, alias), set()).add(root(n))
+        titles = application_title_aliases(item.get('name', ''))
+        legacy_title_match = any(application_title_aliases(ident, legacy_id=True) & titles for ident in ids[n])
+        if any(ident.count('.') >= 2 for ident in ids[n]) or (ids[n] and not legacy_title_match):
+            anchored.add(root(n))
+    # Decide ambiguity against the explicit-ID graph, before weak joins can
+    # turn an unknown-name record into a bridge between different applications.
+    ambiguous = {alias for alias, roots in aliases.items() if len(roots & anchored) > 1}
+    proposals = {}
+    for alias, roots in aliases.items():
+        if alias in ambiguous:
+            continue
+        anchors = roots & anchored
+        if anchors:
+            anchor = next(iter(anchors))
+            for candidate in roots - anchors:
+                proposals.setdefault(candidate, set()).add(anchor)
+    for candidate, anchors in proposals.items():
+        if len(anchors) == 1:
+            join(candidate, next(iter(anchors)))
+    for alias, roots in sorted(aliases.items()):
+        if alias in ambiguous or roots & anchored:
+            continue
+        # Unknown records which also match competing known identities stay
+        # independent instead of indirectly connecting those identities.
+        safe = [n for n in sorted(roots) if len(proposals.get(n, set())) <= 1]
+        if safe:
+            for n in safe[1:]:
+                a, b = root(safe[0]), root(n)
+                a_anchors = {root(x) for x in anchored if root(x) == a}
+                b_anchors = {root(x) for x in anchored if root(x) == b}
+                if a_anchors and b_anchors and a != b:
+                    continue
+                join(a, b)
+    groups = {}
+    for n, item in enumerate(records):
+        groups.setdefault(root(n), []).append(item)
+    result = []
+    for choices in list(groups.values())[:limit]:
+        all_ids = set().union(*(application_ids(i) for i in choices))
+        canonical = sorted(all_ids, key=lambda value: (value.count('.') < 2, value))
+        key = 'app:' + canonical[0] if canonical else 'listing:' + hashlib.sha256(
+            json.dumps(sorted(search_variant_key(i) for i in choices)).encode()).hexdigest()
+        # Friendly catalog identity is independent of the selected packaging.
+        display = min(choices, key=lambda i: (not bool(i.get('desktop_app')), '_' in i['name'],
+                      i['name'].islower(), {'flatpak':0, 'deb':1, 'snap':2, 'appimage':3}[i['source']], i['name']))
+        art = next((i for i in [display] + choices if i.get('icon') and not i['icon'].startswith('application-x-')), display)
+        sources = [name for source, name in [('deb','Debian'),('flatpak','Flatpak'),('snap','Snap'),('appimage','AppImage')]
+                   if any(i['source'] == source for i in choices)]
+        choices.sort(key=lambda i: (not bool(i.get('installed')), i.get('branch', 'stable') != 'stable',
+                     {'deb':0, 'flatpak':1, 'snap':2, 'appimage':3}[i['source']], search_variant_key(i)))
+        for item in choices:
+            item.update(application_key=key, application_name=display['name'].replace('_', ' '),
+                        application_summary=display.get('summary', ''), application_icon=art.get('icon', ''),
+                        application_icon_key=art.get('icon_key', ''), application_sources=' · '.join(sources),
+                        application_installed=any(i.get('installed') for i in choices),
+                        search_key=hashlib.sha256(json.dumps(search_variant_key(item)).encode()).hexdigest())
+        result.extend(choices)
+    return result, len(groups)
+
+
 class PlainDescription(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -518,6 +672,11 @@ def deb_search(query):
                     installed=name in installed, version=installed.get(name, {}).get("version", ""), icon="application-x-deb")
         item.update({k: v for k, v in metadata.get(name, {}).items() if v or k != "version"})
         items.append(item)
+    missing = [i for i in items if i['installed'] and not i.get('desktop_app')]
+    if missing:
+        launchers = debian_desktop_packages()
+        for item in missing:
+            item.update(launchers.get(item['id'], {}))
     return ranked_search(items, query)
 
 class SnapHTTP(http.client.HTTPConnection):
@@ -569,6 +728,9 @@ def snap_items(query=None, updates=False, limit=LIMIT):
         item['installed_revision'] = str(installed_records.get(item['id'], {}).get('revision', ''))
         item['installed_version'] = installed_records.get(item['id'], {}).get('version', '')
     records = {x['name']: x for x in data}
+    for item in items:
+        common = records[item['id']].get('common-ids', [])
+        item['common_ids'] = [v for v in common if isinstance(v, str) and APPID.fullmatch(v)] if isinstance(common, list) else []
     return [catalog_icon(item, snap_artwork_locator(records[item['id']], installed_records.get(item['id']))) for item in items]
 
 
@@ -661,7 +823,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.3.0"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.3.1"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -1658,6 +1820,9 @@ def listing(request):
                 warnings.append(source + ": " + str(e))
     if mode == "search":
         items = ranked_search(items, query, limit=300 * len(sources))
+        items, total = group_search_results(items)
+        return dict(items=items, warnings=sorted(warnings), total=total,
+                    message='Showing up to 300 applications. Search to narrow the list.' if total > 300 else '')
     else:
         items.sort(key=lambda x: (x["name"].casefold(), x["source"], x.get("scope", "")))
     # Filtering installed packages is local and does not invoke a package solver.
@@ -1786,7 +1951,7 @@ def cached_artwork(url):
         return stale
     if not public_https(url, resolve=True):
         return stale
-    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.3.0'})
+    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.3.1'})
     try:
         with urllib.request.build_opener(ArtworkRedirect()).open(request, timeout=6) as response:
             raw = response.read(6 * 1024 * 1024 + 1)
