@@ -50,7 +50,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.3.0"
+#define APP_CENTER_VERSION "0.3.1"
 #endif
 
 static J branding() {
@@ -83,6 +83,21 @@ static std::string sourceName(const J& item) {
     if(s=="snap") return "Snap · system";
     return item["catalog"].toBool() ? "AppImage · community catalog" : "AppImage · personal library";
 }
+static std::string sourceChoiceName(const J& item) {
+    auto name=sourceName(item);
+    if(str(item,"source")=="flatpak"){
+        if(!str(item,"branch").empty())name+=" · "+str(item,"branch");
+    }else if(str(item,"source")=="snap"){
+        if(!str(item,"channel").empty())name+=" · "+str(item,"channel");
+    }
+    return name+(item["catalog"].toBool()?" · Download":item["installed"].toBool()?" · Installed":" · Available");
+}
+static std::string variantKey(const J& item) {
+    if(!str(item,"search_key").empty())return str(item,"search_key");
+    std::string key;
+    for(auto field:{"source","id","scope","remote","branch","arch","architecture","channel","path"})key+=str(item,field)+"\n";
+    return key;
+}
 class Panel : public ui::Column {
 public:
     explicit Panel(bool accent=false,double radius=16): m_accent(accent),m_radius(radius) { setMargins(ui::Margins::all(20)); setSpacing(12); }
@@ -106,7 +121,10 @@ public:
         if(item["update_available"].toBool()){
             auto* badge=label(heading,item["update_blocked"].toBool()?"Held":"Update",10,650);size(badge,48,-1);badge->setColor(ui::Theme::current().highlight);
         }
-        auto subtitle=sourceName(item);
+        else if(item["application_installed"].toBool()){
+            auto* badge=label(heading,"Installed",10,550);size(badge,60,-1);badge->setColor(ui::ColorId::DisabledText);
+        }
+        auto subtitle=str(item,"application_sources").empty()?sourceName(item):str(item,"application_sources");
         if(item["management"].toBool()){
             auto version=str(item,"installed_version");if(!version.empty())subtitle+=" · "+version;
             auto available=str(item,"update_version");if(!available.empty() && available!=version)subtitle+=" → "+available;
@@ -649,6 +667,7 @@ private:
     }
     std::string groupKey(const J& item) {
         if(m_page=="installed")return str(item,"install_key");
+        if(!str(item,"application_key").empty())return str(item,"application_key");
         std::string id=str(item,"app_id");
         if(id.empty() && str(item,"source")=="flatpak")id=str(item,"id");
         if(!id.empty()) {
@@ -691,7 +710,12 @@ private:
                     }
                 }
             }
-            auto* row=col->addChild<AppRow>(m_groups[i][0]);
+            auto presentation=m_groups[i][0];
+            if(m_page!="installed" && !str(presentation,"application_key").empty()){
+                presentation.insert("name",presentation["application_name"]);
+                if(!str(presentation,"application_icon").empty())presentation.insert("icon",presentation["application_icon"]);
+            }
+            auto* row=col->addChild<AppRow>(presentation);
             if(m_groups[i].size()>1)row->setToolTip(std::to_string(m_groups[i].size())+" source or installation choices");
             row->onClicked=[this,i]{if(m_page=="installed")m_userSelected=true;select(i);};m_rows.push_back(row);
         }
@@ -713,10 +737,17 @@ private:
     void applyListIcon(const std::string& key,const std::string& path) {
         if(key.empty() || !std::filesystem::path(path).is_absolute())return;
         for(size_t i=0;i<m_groups.size();i++){
-            for(auto& variant:m_groups[i])if(str(variant,"icon_key")==key)variant.insert("icon",path);
-            if(i<m_rows.size() && str(m_groups[i][0],"icon_key")==key)m_rows[i]->setIcon(path);
+            for(auto& variant:m_groups[i]){
+                if(str(variant,"icon_key")==key)variant.insert("icon",path);
+                if(str(variant,"application_icon_key")==key)variant.insert("application_icon",path);
+            }
+            auto rowKey=str(m_groups[i][0],"application_icon_key");if(rowKey.empty())rowKey=str(m_groups[i][0],"icon_key");
+            if(i<m_rows.size() && rowKey==key)m_rows[i]->setIcon(path);
         }
-        for(auto& variant:m_variants)if(str(variant,"icon_key")==key)variant.insert("icon",path);
+        for(auto& variant:m_variants){
+            if(str(variant,"icon_key")==key)variant.insert("icon",path);
+            if(str(variant,"application_icon_key")==key)variant.insert("application_icon",path);
+        }
     }
     void loadVisibleIcons() {
         if(m_preview || m_busy || m_iconProcess || m_rows.empty() || !m_list->isVisible())return;
@@ -726,7 +757,7 @@ private:
         for(size_t i=0;i<m_rows.size() && keys.size()<12;i++){
             auto* row=m_rows[i];const auto y=row->mapToWindow({0,0}).y;
             if(y+row->geometry().height<top-80 || y>bottom+80)continue;
-            auto key=str(m_groups[i][0],"icon_key");
+            auto key=str(m_groups[i][0],"application_icon_key");if(key.empty())key=str(m_groups[i][0],"icon_key");
             if(!key.empty() && m_iconAttempted.insert(key).second)keys.push_back(key);
         }
         if(keys.empty())return;
@@ -755,7 +786,11 @@ private:
     }
     void select(size_t i) {
         for(size_t n=0;n<m_rows.size();n++)m_rows[n]->selected(n==i);
-        m_variants=m_groups[i];details(0);
+        m_variants=m_groups[i];m_activeApplication=groupKey(m_variants[0]);size_t selected=0;
+        if(m_page!="installed" && m_sourceChoices.contains(m_activeApplication)){
+            for(size_t n=0;n<m_variants.size();n++)if(variantKey(m_variants[n])==m_sourceChoices[m_activeApplication]){selected=n;break;}
+        }
+        details(selected);
     }
     void cancelDetails() {
         ++m_detailGeneration;
@@ -868,15 +903,27 @@ private:
         auto* identity=panel->addChild<ui::Row>();identity->setSpacing(14);size(identity,-1,-1,true);
         auto* icon=identity->addChild<ui::IconImage>(str(item,"icon"),64);icon->setFallbackName("application-x-executable");size(icon,64,64);
         auto* title=identity->addChild<ui::Column>();title->setSpacing(5);size(title,-1,-1,true);
-        label(title,str(item,"name"),23,700,true);
-        auto* status=label(title,item["catalog"].toBool()?"AppImage download":item["installed"].toBool()?"Installed":"Available",11,500);status->setColor(ui::ColorId::DisabledText);
-        if(!str(item,"summary").empty())label(panel,str(item,"summary"),13,400,true);
+        const bool unified=m_page!="installed" && !str(item,"application_name").empty();
+        label(title,unified?str(item,"application_name"):str(item,"name"),23,700,true);
+        auto* status=label(title,item["catalog"].toBool()?"AppImage download":item["installed"].toBool()?"Installed":item["application_installed"].toBool()?"Installed from another source":"Available",11,500);status->setColor(ui::ColorId::DisabledText);
+        auto summary=unified?str(item,"application_summary"):str(item,"summary");
+        if(!summary.empty())label(panel,summary,13,400,true);
         if(!str(item,"publisher").empty())label(panel,str(item,"publisher")+(item["publisher_verified"].toBool()?" · Verified Snap publisher":""),12,550,true);
         label(panel,"Software source",11,650);
         if(m_variants.size()>1) {
-            std::vector<std::string> names;for(auto& v:m_variants){auto name=sourceName(v);if(!str(v,"branch").empty())name+=" · "+str(v,"branch");names.push_back(name);}
+            std::vector<std::string> names;std::map<std::string,int> duplicates;
+            for(auto& v:m_variants){names.push_back(sourceChoiceName(v));++duplicates[names.back()];}
+            for(size_t n=0;n<names.size();n++)if(duplicates[names[n]]>1){
+                auto arch=str(m_variants[n],"arch");if(arch.empty())arch=str(m_variants[n],"architecture");
+                names[n]+=" · "+str(m_variants[n],"id")+(arch.empty()?"":" · "+arch);
+            }
             auto* variants=panel->addChild<ui::ComboBox>(names);size(variants,-1,36,true);variants->setCurrentIndex(int(index));
-            variants->onActivated=[this](int n){m_app.loop().post([this,n]{details(n);});};
+            variants->setToolTip("Choose the software source for this application. Actions apply only to the selected source.");
+            variants->onActivated=[this](int n){
+                if(n<0 || size_t(n)>=m_variants.size())return;
+                m_sourceChoices[m_activeApplication]=variantKey(m_variants[n]);
+                m_app.loop().post([this,n]{details(n);});
+            };
         } else label(panel,sourceName(item),13,550,true);
         if(item["catalog"].toBool()) {
             auto* download=panel->addChild<ui::DialogButton>("Open download page…",true);size(download,-1,40,true);download->setEnabled(!m_preview);
@@ -981,6 +1028,8 @@ private:
     std::vector<AppRow*> m_rows;
     std::vector<std::vector<J>> m_groups;
     std::vector<J> m_variants;
+    std::string m_activeApplication;
+    std::map<std::string,std::string> m_sourceChoices;
     std::unique_ptr<base::Process> m_process,m_detailProcess,m_discoverProcess,m_iconProcess,m_updateProcess;
     base::Timer m_debounce,m_iconDebounce;
     std::unique_ptr<ui::FileChooser> m_chooser;
