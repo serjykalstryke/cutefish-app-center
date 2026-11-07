@@ -145,13 +145,16 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(b.appimage_feed(),[{'name':'Example'}])
     def test_debian_update_preserves_exact_package_id_and_architecture(self):
         pid='fixture;2.0;arm64;debian'
+        same='fixture;1.0;arm64;debian'
         class FakePK:
-            def transaction(self,*a):return ([{'id':pid}],[])
-        with patch.object(b,'PackageKit',FakePK):
+            def transaction(self,*a):return ([{'id':pid},{'id':same}],[])
+        with patch.object(b,'PackageKit',FakePK), patch.object(b,'dpkg_installed',return_value=[dict(id='fixture:arm64',architecture='arm64',version='1.0')]):
             _,method,_,args=b.pk_args({'source':'deb','id':'fixture','package_id':pid},'update',6)
             self.assertEqual(method,'UpdatePackages');self.assertEqual(args[1],[pid])
             with self.assertRaises(b.AppCenterError):
                 b.pk_args({'source':'deb','id':'fixture','package_id':'fixture;1.0;amd64;debian'},'update',6)
+            with self.assertRaises(b.AppCenterError):
+                b.pk_args({'source':'deb','id':'fixture','package_id':same},'update',6)
     def test_failed_source_does_not_hide_other_sources(self):
         def provider(source, mode, query):
             if source=='snap':raise b.AppCenterError('offline')

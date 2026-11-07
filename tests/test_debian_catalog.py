@@ -162,7 +162,8 @@ class DebianCatalogTests(unittest.TestCase):
         from unittest.mock import Mock
         pk = Mock()
         pk.transaction.return_value = ([dict(id='demo;2.0;amd64;debian', summary='Package summary')], [])
-        with patch.object(b, 'appstream', return_value=self.read()), patch.object(b, 'PackageKit', return_value=pk):
+        installed = dict(source='deb', id='demo', architecture='amd64', version='1.0', name='demo', scope='system')
+        with patch.object(b, 'appstream', return_value=self.read()), patch.object(b, 'PackageKit', return_value=pk), patch.object(b, 'dpkg_installed', return_value=[installed]):
             item = b.inventory_provider('deb', 'updates', '')[0]
         self.assertEqual(item['package_id'], 'demo;2.0;amd64;debian')
         self.assertEqual(item['version'], '2.0')

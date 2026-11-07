@@ -23,7 +23,7 @@ class ManagementTests(unittest.TestCase):
   env=patch.dict(os.environ,XDG_DATA_HOME=str(self.root/'data'),XDG_CACHE_HOME=str(self.root/'cache'));env.start();self.addCleanup(env.stop)
  def test_appstream_and_visible_launchers_identify_apps_without_name_blacklist(self):
   installed=[deb('libdrawing'),deb('opaque-name'),deb('libcodec'),deb('headless-service')]
-  metadata={'libdrawing':dict(desktop_app=True,name='Drawing')}
+  metadata={'libdrawing':dict(desktop_app=True,name='Drawing',version='Catalog release')}
   desktops={'opaque-name':dict(desktop_app=True,name='Writer',icon='writer',is_application=True)}
   with patch.object(b,'dpkg_installed',return_value=installed),patch.object(b,'appstream',return_value=metadata),patch.object(b,'debian_desktop_packages',return_value=desktops):items=b.management_provider('deb')
   self.assertEqual({i['id'] for i in items if i['is_application']},{'libdrawing','opaque-name'})
@@ -78,11 +78,34 @@ class ManagementTests(unittest.TestCase):
   with patch.object(b,'PackageKit',return_value=pk),patch.object(b,'dpkg_installed',return_value=[item]):
    with self.assertRaisesRegex(b.AppCenterError,'protected'):b.debian_update_group([item])
  def test_held_packages_are_not_submitted_to_update_transaction(self):
-  pk=Mock();pk.transaction.return_value=([],[])
+  pk=Mock();pk.transaction.return_value=([dict(info='updating',id='demo;2;amd64;repo')],[])
   items=[dict(deb('held'),package_id='held;2;amd64;repo',update_blocked=True),dict(deb(),package_id='demo;2;amd64;repo')]
   with patch.object(b,'PackageKit',return_value=pk):result=b.debian_update_group(items)
   self.assertEqual(result['targets'],['demo;2;amd64;repo'])
   pk.transaction.assert_called_once_with('UpdatePackages','(tas)',(6,['demo;2;amd64;repo']))
+ def test_update_inventory_ignores_same_and_older_versions_for_each_architecture(self):
+  installed=[deb('demo:amd64',version='1:2.0-1'),deb('demo:arm64',architecture='arm64',version='1:2.0-3')]
+  ids=['demo;1:2.0-1;amd64;nightly','demo;1:2.0-01;amd64;nightly','demo;99.0;amd64;nightly',
+       'demo;1:2.0-2;arm64;nightly','demo;1:2.0-2;amd64;nightly','unknown;2;amd64;nightly']
+  pk=Mock();pk.transaction.return_value=([dict(id=p,info='normal') for p in ids],[])
+  metadata={'demo':dict(desktop_app=True,version='Catalog release')}
+  with patch.object(b,'PackageKit',return_value=pk),patch.object(b,'dpkg_installed',return_value=installed),patch.object(b,'appstream',return_value=metadata):
+   result=b.management_provider('deb',updates=True)
+  self.assertEqual([(i['package_id'],i['installed_version'],i['update_version']) for i in result],[(ids[4],'1:2.0-1','1:2.0-2')])
+ def test_architecture_independent_upgrade_matches_the_existing_installation(self):
+  pk=Mock();pk.transaction.return_value=([dict(id='demo;2;all;repo',info='normal')],[])
+  installed=deb()
+  with patch.object(b,'PackageKit',return_value=pk),patch.object(b,'dpkg_installed',return_value=[installed]),patch.object(b,'appstream',return_value={}):
+   result=b.management_provider('deb',updates=True)
+  self.assertEqual(result[0]['install_key'],b.software_key(installed))
+  self.assertEqual(result[0]['package_id'],'demo;2;all;repo')
+ def test_empty_debian_simulations_cannot_be_approved(self):
+  pk=Mock();pk.transaction.return_value=([],[])
+  target=dict(deb(),package_id='demo;2;amd64;repo')
+  with patch.object(b,'PackageKit',return_value=pk):
+   with self.assertRaisesRegex(b.AppCenterError,'prepared no changes'):b.debian_update_group([target])
+  with patch.object(b,'pk_args',return_value=(pk,'UpdatePackages','(tas)',(6,[target['package_id']]))):
+   with self.assertRaisesRegex(b.AppCenterError,'prepared no changes'):b.plan(target,'update')
  def test_incomplete_source_check_blocks_update_all_before_modification(self):
   with patch.object(b,'management_inventory',return_value=dict(complete=False,warnings=['snap: offline'])),patch.object(b,'debian_update_group') as update:
    with self.assertRaisesRegex(b.AppCenterError,'No updates have been applied'):b.prepare_all_updates()
@@ -121,9 +144,19 @@ class ManagementTests(unittest.TestCase):
  def test_debian_apply_preserves_exact_architectures_and_restart_result(self):
   g=group(targets=['demo;2;arm64;repo'],changes=[dict(info='updating',id='demo;2;arm64;repo')]);approved=plan([g])
   pk=Mock();pk.transaction.side_effect=[(g['changes'],[]),([],['system'])]
-  with patch.object(b,'prepare_all_updates',return_value=approved),patch.object(b,'PackageKit',return_value=pk):result=b.apply_all_updates(approved)
+  with patch.object(b,'prepare_all_updates',return_value=approved),patch.object(b,'PackageKit',return_value=pk),patch.object(b,'dpkg_installed',return_value=[deb('demo:arm64',architecture='arm64',version='2')]):result=b.apply_all_updates(approved)
   self.assertEqual(pk.transaction.call_args_list[-1].args,('UpdatePackages','(tas)',(2,['demo;2;arm64;repo'])))
   self.assertTrue(result['restart']);self.assertEqual(result['errors'],[])
+ def test_successful_packagekit_reply_with_no_version_change_fails_bulk_and_single_update(self):
+  g=group();approved=plan([g]);pk=Mock()
+  pk.transaction.side_effect=[(g['changes'],[]),([],[])]
+  with patch.object(b,'prepare_all_updates',return_value=approved),patch.object(b,'PackageKit',return_value=pk),patch.object(b,'dpkg_installed',return_value=[deb()]):
+   result=b.apply_all_updates(approved)
+  self.assertEqual(result['completed'],[]);self.assertIn('did not install the reviewed versions',result['errors'][0])
+  single=dict(target=dict(deb(),package_id=g['targets'][0]),action='update',fingerprint='a'*64)
+  pk.transaction.side_effect=None;pk.transaction.return_value=([],[])
+  with patch.object(b,'plan',return_value=single),patch.object(b,'pk_args',return_value=(pk,'UpdatePackages','(tas)',(2,g['targets']))),patch.object(b,'dpkg_installed',return_value=[deb()]):
+   with self.assertRaisesRegex(b.AppCenterError,'did not install the reviewed versions'):b.apply(single)
  def test_debian_failure_keeps_restart_requirement_from_partial_changes(self):
   g=group();approved=plan([g]);pk=Mock()
   pk.transaction.side_effect=[(g['changes'],[]),b.PackageKitFailure('An update failed',['system'])]
@@ -133,7 +166,7 @@ class ManagementTests(unittest.TestCase):
  def test_partial_failure_stops_later_sources_and_reports_completed_changes(self):
   groups=[group(),group('flatpak',targets=[]),group('snap',targets=[dict(name='demo',revision='2')])];approved=plan(groups)
   pk=Mock();pk.transaction.side_effect=[(groups[0]['changes'],[]),([],[])]
-  with patch.object(b,'prepare_all_updates',return_value=approved),patch.object(b,'PackageKit',return_value=pk),patch.object(b,'flatpak_update_group',side_effect=b.AppCenterError('authorization denied')),patch.object(b,'snap_api') as snap:
+  with patch.object(b,'prepare_all_updates',return_value=approved),patch.object(b,'PackageKit',return_value=pk),patch.object(b,'dpkg_installed',return_value=[deb(version='2')]),patch.object(b,'flatpak_update_group',side_effect=b.AppCenterError('authorization denied')),patch.object(b,'snap_api') as snap:
    result=b.apply_all_updates(approved)
   self.assertEqual(result['completed'],['deb']);self.assertEqual(result['pending'],['snap']);self.assertIn('authorization denied',result['message']);snap.assert_not_called()
  def test_changed_debian_dependencies_block_real_transaction(self):
@@ -148,7 +181,7 @@ class ManagementTests(unittest.TestCase):
   api.assert_called_once_with('/v2/snaps',dict(action='refresh',snaps=['core24']));self.assertFalse(result['errors']);wait.assert_called_once()
  def test_caller_groups_do_not_override_recomputed_plan(self):
   current=plan([group()]);approved=dict(current,groups=[group(targets=['untrusted;999;amd64;other'])]);pk=Mock();pk.transaction.side_effect=[(current['groups'][0]['changes'],[]),([],[])]
-  with patch.object(b,'prepare_all_updates',return_value=current),patch.object(b,'PackageKit',return_value=pk):b.apply_all_updates(approved)
+  with patch.object(b,'prepare_all_updates',return_value=current),patch.object(b,'PackageKit',return_value=pk),patch.object(b,'dpkg_installed',return_value=[deb(version='2')]):b.apply_all_updates(approved)
   self.assertEqual(pk.transaction.call_args.args[-1],(2,['demo;2;amd64;repo']))
 
 class FakeError(Exception):pass
