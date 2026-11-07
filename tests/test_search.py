@@ -161,5 +161,116 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(result['warnings'], ['snap: offline'])
 
 
+class ApplicationIdentityTests(unittest.TestCase):
+    def grouped(self, records, limit=300):
+        items, total = b.group_search_results(records, limit)
+        groups = {}
+        for item in items:
+            groups.setdefault(item['application_key'], []).append(item)
+        return list(groups.values()), total
+
+    def test_firefox_has_one_card_for_flatpak_snap_and_appimage(self):
+        records = [app('Firefox', id='org.mozilla.firefox', scope='system', branch='stable'),
+                   app('firefox', source='snap', id='firefox'),
+                   app('Firefox', source='appimage', id='a'*64, catalog=True)]
+        groups, total = self.grouped(records)
+        self.assertEqual(total, 1)
+        self.assertEqual({x['source'] for x in groups[0]}, {'flatpak','snap','appimage'})
+        self.assertTrue(all(x['application_name']=='Firefox' for x in groups[0]))
+        self.assertEqual(groups[0][0]['application_sources'], 'Flatpak · Snap · AppImage')
+        self.assertNotIn('application_key', records[0])
+
+    def test_appstream_desktop_and_snap_common_ids_join_different_display_names(self):
+        groups, total = self.grouped([
+            app('Photo Editor', source='deb', id='drawing', app_id='org.example.Paint.desktop'),
+            app('Paint', id='org.example.Paint'),
+            app('Paint Community', source='snap', id='paint-app', common_ids=['org.example.Paint'])])
+        self.assertEqual(total, 1)
+        self.assertEqual(len(groups[0]), 3)
+
+    def test_installed_source_is_selected_before_an_available_native_package(self):
+        groups, _ = self.grouped([app('Example', source='deb', id='example', app_id='org.example.App'),
+                                 app('Example', id='org.example.App', installed=True, scope='user')])
+        self.assertEqual(groups[0][0]['source'], 'flatpak')
+        self.assertTrue(all(i['application_installed'] for i in groups[0]))
+
+    def test_native_is_default_when_no_source_is_installed(self):
+        groups, _ = self.grouped([app('Example', id='org.example.App'),
+                                 app('Example', source='snap', id='example'),
+                                 app('Example', source='deb', id='example', app_id='org.example.App')])
+        self.assertEqual(groups[0][0]['source'], 'deb')
+
+    def test_chrome_chromium_and_unstable_are_separate_applications(self):
+        records = [app('Google Chrome', id='com.google.Chrome'),
+                   app('Chromium', id='org.chromium.Chromium'),
+                   app('Google Chrome (unstable)', id='com.google.ChromeDev'),
+                   app('Google Chrome', source='snap', id='google-chrome-beta')]
+        self.assertEqual(self.grouped(records)[1], 4)
+
+    def test_esr_and_nightly_are_distinct_but_esr_formats_join(self):
+        records = [app('Firefox', id='org.mozilla.firefox'),
+                   app('Firefox ESR', source='deb', id='firefox-esr', app_id='firefox-esr.desktop'),
+                   app('Firefox_ESR', source='appimage', id='a'*64, catalog=True),
+                   app('Firefox_Nightly', source='appimage', id='b'*64, catalog=True)]
+        groups, total = self.grouped(records)
+        self.assertEqual(total, 3)
+        self.assertEqual(sorted(len(g) for g in groups), [1,1,2])
+
+    def test_ambiguous_title_does_not_merge_unrelated_apps_or_unknown_bridge(self):
+        groups, total = self.grouped([app('Files', id='org.example.Files'),
+            app('Files', id='org.other.Files'), app('Files', source='snap', id='files')])
+        self.assertEqual(total, 3)
+
+    def test_legacy_opaque_identity_is_not_overridden_by_shared_title(self):
+        records = [app('Files', source='deb', id='desktop-files', app_id='cutefish-filemanager.desktop'),
+                   app('Files', id='org.gnome.Nautilus')]
+        self.assertEqual(self.grouped(records)[1], 2)
+
+    def test_descriptive_browser_suffix_and_package_alias_join_brave(self):
+        records = [app('Brave Web Browser', id='com.brave.Browser'),
+                   app('Brave', source='snap', id='brave')]
+        self.assertEqual(self.grouped(records)[1], 1)
+
+    def test_legacy_chromium_launchers_join_the_flatpak_identity(self):
+        records = [app('Chromium Web Browser', source='deb', id='chromium', app_id='chromium.desktop'),
+                   app('chromium', source='snap', id='chromium', common_ids=['chromium-browser.desktop']),
+                   app('Chromium Web Browser', id='org.chromium.Chromium')]
+        groups, total = self.grouped(records)
+        self.assertEqual(total, 1)
+        self.assertEqual(groups[0][0]['application_sources'], 'Debian · Flatpak · Snap')
+
+    def test_technical_package_cannot_become_an_application_source(self):
+        records = [app('Example', id='org.example.Example'),
+                   app('Example', source='deb', id='example', desktop_app=False)]
+        self.assertEqual(self.grouped(records)[1], 2)
+
+    def test_branches_scopes_remotes_and_architectures_survive_grouping(self):
+        records = [app('Example', id='org.example.Example', scope=scope, branch=branch,
+                       remote=remote, arch=arch)
+                   for scope in ('system','user') for branch in ('stable','beta')
+                   for remote in ('flathub','other') for arch in ('x86_64','aarch64')]
+        groups, total = self.grouped(records + [dict(records[0])])
+        self.assertEqual(total, 1)
+        self.assertEqual(len(groups[0]), 16)
+        self.assertEqual({(i['scope'],i['branch'],i['remote'],i['arch']) for i in groups[0]},
+                         {(i['scope'],i['branch'],i['remote'],i['arch']) for i in records})
+
+    def test_group_limit_preserves_every_source_for_included_app(self):
+        records = [app('Example', id='org.example.Example', scope='user'),
+                   app('Other', id='org.example.Other'),
+                   app('Example', source='snap', id='example'),
+                   app('Example', id='org.example.Example', scope='system')]
+        groups, total = self.grouped(records, limit=1)
+        self.assertEqual(total, 2)
+        self.assertEqual(len(groups[0]), 3)
+
+    def test_source_filter_does_not_fabricate_unavailable_choices(self):
+        with patch.object(b, 'inventory_provider', return_value=[app('Example', source='snap', id='example')]) as provider:
+            result = b.listing(dict(mode='search',query='example',source='snap'))
+        provider.assert_called_once_with('snap','search','example')
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['items'][0]['application_sources'], 'Snap')
+
+
 if __name__ == '__main__':
     unittest.main()
