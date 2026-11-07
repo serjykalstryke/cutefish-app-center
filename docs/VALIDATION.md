@@ -207,3 +207,22 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   applications. The native test rendered the live Firefox card.
 - The 0.3.1 package passed runtime linkage checks. Its executable and backend
   match the tested build. APT's preview selects only the App Center upgrade.
+
+## 0.3.2 Update All progress and recovery — November 6, 2026
+
+- All 143 automated checks and six native checks pass. The private D-Bus test
+  verifies authentication status before the method reply and measured and
+  indeterminate progress. Native management checks the close guard, source
+  progress, partial completion, skipped sources and restart notice.
+- A disposable Debian 13.7 VM ran the backend against real PackageKit, Flatpak
+  and snapd services. The first unauthenticated PackageKit attempt failed and
+  skipped later sources. Installed versions remained at their starting values.
+- In a separate run, Debian packages and a user Flatpak runtime updated before
+  snapd denied authorization. The old review was rejected. A fresh review
+  contained only the remaining Snap refresh, which completed successfully.
+- A final authorized run completed all three sources in one operation. Installed
+  state confirmed the Debian test package at 3.0, the expected new Flatpak
+  runtime commit, and GNU Hello Snap at revision 42. The Flatpak test exposed
+  and verified the fix for reviewing an installed commit as an update target.
+- The Debian package passed runtime linkage checks and contains the tested
+  executable and backend. APT preview selected the App Center upgrade alone.

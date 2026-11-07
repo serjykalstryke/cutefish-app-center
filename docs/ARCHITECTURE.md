@@ -124,8 +124,9 @@ fingerprint. The native review includes groups hidden by current list filters.
 
 `apply_all_updates` recomputes the entire plan under the mutation lock, rejects
 changed targets/dependencies and uses the recomputed groups. Debian re-simulates
-immediately before applying. Flatpak pins resolved commits and rechecks operation
-identity before and after authorization; required related installs retain their
+immediately before applying. Flatpak resolves the current remote commits through
+its transaction and checks them against the reviewed operation identity before
+and after authorization; required related installs retain their
 original root target even if that root commit is current. Individual Flatpak
 updates use the same review/apply machinery. New remotes and interactive remote
 authentication are refused. Snap rechecks revisions and refreshes only reviewed
@@ -163,3 +164,14 @@ cancels the old detail process and only its current generation can render.
 The source-specific publisher, version, permissions, screenshots and actions
 remain attached to that selected target. Operations use the exact installation
 identifier for that choice.
+
+
+Update All streams indexed source events for active, completed, failed and
+skipped groups. The progress dialog binds indices to the reviewed source order.
+PackageKit dispatches property changes while waiting for the method reply, so
+reported authentication and lock waits can appear immediately. Snap uses the
+active task's progress and Flatpak uses transaction operation progress. When a
+provider has no measurable progress, the active row shows an indeterminate bar.
+If a service stops mid-operation, rows without a confirmed result show an
+unknown outcome. The result retains restart notices even if a later source
+fails or Debian reports an error after applying changes.
