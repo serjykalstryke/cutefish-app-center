@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2 — 2026-11-06
+
+- Show each source in the Update All progress window, with authentication, download and apply phases when reported by the provider.
+- Keep completion, failures, skipped sources and restart notices together in the result. Refresh the installed inventory when the result closes.
+- Resolve Flatpak updates from the remote transaction so a pending update appears in review even when the local commit is already deployed. Compare resolved operations with the approved review before applying.
+
 ## 0.3.1 — 2026-11-06
 
 - Present one search entry per application across Debian, Flatpak, Snap and AppImage, with available formats listed on the card.

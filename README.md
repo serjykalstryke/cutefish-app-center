@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.3.1_amd64.deb
-sudo apt install ./cutefish-app-center_0.3.1_amd64.deb
+    --output cutefish-app-center_0.3.2_amd64.deb
+sudo apt install ./cutefish-app-center_0.3.2_amd64.deb
 cutefish-app-center
 ```
 
@@ -184,9 +184,11 @@ remain manually updated through their publishers.
 
 Update All shows the proposed changes before **Apply Updates**. Canceling the
 review applies nothing. If a source cannot be checked, the list remains usable
-and Update All waits until that source is available. If applying updates fails,
-the result identifies completed sources and those not attempted. Completed
-changes remain installed. Required restart or sign-in notices appear afterward.
+and Update All waits until that source is available. After you confirm, the
+progress window shows each source and the steps its package manager reports.
+Keep App Center open while updates are running. The result keeps completed
+sources, failures, sources still to update, and restart or sign-in notices
+together. After a failure, check for updates again to review the remaining work.
 
 Select an app to load its full description, publisher, versions and license
 where provided. Catalog artwork appears in a screenshot gallery; use the
