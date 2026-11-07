@@ -226,3 +226,19 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   and verified the fix for reviewing an installed commit as an update target.
 - The Debian package passed runtime linkage checks and contains the tested
   executable and backend. APT preview selected the App Center upgrade alone.
+
+## 0.3.3 Debian updates that repeat — November 6, 2026
+
+- Cutefish desktop inspection showed four applications and three system
+  components queued for update. PackageKit reported identical installed and
+  candidate versions for all seven, and its transaction simulation returned
+  zero changes. The patched backend returned zero updates and an empty plan
+  against the same system inventory.
+- The disposable Debian 13 VM still offered a genuine test package upgrade
+  from 3.0 to 4.0. App Center applied it, verified the installed version, and
+  cleared it from update inventory.
+- All 147 automated checks and six native checks passed. The regressions cover
+  Debian version ordering, architecture, empty reviews and service success
+  replies that leave the installed version unchanged.
+- Installed App Center 0.3.3 on the development host. The Cutefish Installed
+  page showed no updates after a fresh source check.

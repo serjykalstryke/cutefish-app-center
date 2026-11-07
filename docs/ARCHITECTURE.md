@@ -175,3 +175,11 @@ provider has no measurable progress, the active row shows an indeterminate bar.
 If a service stops mid-operation, rows without a confirmed result show an
 unknown outcome. The result retains restart notices even if a later source
 fails or Debian reports an error after applying changes.
+
+
+Debian update discovery cross-checks PackageKit's exact candidate IDs against
+installed dpkg versions. Debian version ordering determines eligibility.
+Repository entries at the installed version are treated as replacement builds
+for reinstall rather than upgrades. A valid review must contain changes, and
+the installed package must reach the reviewed version before the app reports
+success. Both single updates and Update All use these checks.
