@@ -24,7 +24,22 @@ elif request['op']=='plan_all_updates':
  result=dict(plan=dict(groups=[dict(source='deb',scope='system',name='Debian system',targets=['zulu','libc6'],changes=changes[:2],note='Applications and system packages'),dict(source='flatpak',scope='system',name='Flatpak system',targets=['writer','platform'],changes=changes[2:5],note='Includes shared runtimes'),dict(source='snap',scope='system',name='Snap system',targets=['core24'],changes=changes[5:],note='Includes Snap bases')],fingerprint='a'*64,note='All software and sources are updated, regardless of the current filters. AppImages remain manual.'))
 elif request['op']=='apply_all_updates':
  assert request['plan']['fingerprint']=='a'*64
- (root/'apply.json').write_text(json.dumps(request['plan']));time.sleep(0.3);(root/'updated').touch()
- result=dict(message='Updates completed. Restart required.',errors=[],restart=True)
+ (root/'apply.json').write_text(json.dumps(request['plan']))
+ def update(index,state,phase='',message='',percent=None):
+  print(json.dumps(dict(event='update_progress',index=index,state=state,phase=phase,message=message,percent=percent)),flush=True)
+ update(0,'running','authorization','Approve the administrator prompt to continue.')
+ time.sleep(0.35)
+ update(0,'running','downloading','Downloading libc6…',40)
+ time.sleep(0.2)
+ update(0,'completed')
+ update(1,'running','working','Preparing Flatpak changes…')
+ time.sleep(0.2)
+ if (root/'partial').exists():
+  update(1,'failed',message='Authentication was cancelled.')
+  update(2,'skipped')
+  result=dict(message='Some updates could not be completed.',completed=['Debian system'],errors=['Authentication was cancelled.'],pending=['Snap system'],restart=True,restart_notice='A system restart is required.')
+ else:
+  update(1,'completed');update(2,'completed');(root/'updated').touch()
+  result=dict(message='Updates completed.',errors=[],restart=True,restart_notice='A system restart is required.')
 else:raise RuntimeError('The fixture does not run real software operations')
 print(json.dumps(dict(event='result',ok=True,**result)),flush=True)

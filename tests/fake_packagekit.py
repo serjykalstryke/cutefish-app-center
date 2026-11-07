@@ -30,8 +30,17 @@ def method(conn,sender,path,iface,method,args,invocation):
   invocation.return_value(GLib.Variant('(o)',(path,)))
  elif method=='SetHints':invocation.return_value(None)
  else:
-  invocation.return_value(None)
+  reporting=method=='UpdatePackages' and not args.unpack()[0] & 4
+  def status(value,percent):
+   bus.emit_signal(sender,path,'org.freedesktop.DBus.Properties','PropertiesChanged',
+                   GLib.Variant('(sa{sv}as)',(IFACE,{'Status':GLib.Variant('u',value),'Percentage':GLib.Variant('u',percent)},[])))
+  if reporting:status(31,101)
+  else:invocation.return_value(None)
   def result():
+   if reporting:
+    invocation.return_value(None)
+    status(8,45)
+    status(10,101)
    if method=='Resolve':
     name=args.unpack()[1][0]
     bus.emit_signal(sender,path,IFACE,'Package',GLib.Variant('(uss)',(2,name+';1.0;amd64;fixture','A protocol fixture')))

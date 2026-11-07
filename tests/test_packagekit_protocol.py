@@ -29,8 +29,10 @@ class ProtocolTest(unittest.TestCase):
   changes,_=pk.transaction('UpdatePackages','(tas)',(6,ids))
   self.assertEqual([c['id'] for c in changes],ids)
   self.assertTrue(all(c['info']=='updating' for c in changes))
-  _,restarts=pk.transaction('UpdatePackages','(tas)',(2,ids))
+  events=[]
+  _,restarts=pk.transaction('UpdatePackages','(tas)',(2,ids),report=lambda text,pct,phase:events.append((phase,pct)))
   self.assertEqual(restarts,[2])
+  self.assertEqual(events,[('authorization',None),('downloading',45),('applying',None)])
  def test_errors_reach_the_caller(self):
   with self.assertRaisesRegex(b.AppCenterError,'Fixture error'):b.PackageKit().transaction('GetUpdates','(t)',(0,))
 

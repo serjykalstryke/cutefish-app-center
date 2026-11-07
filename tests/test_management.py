@@ -98,14 +98,14 @@ class ManagementTests(unittest.TestCase):
   self.assertEqual(b.restart_notice(['none']),(False,''))
   flag,text=b.restart_notice(['application']);self.assertFalse(flag);self.assertIn('applications',text)
   flag,text=b.restart_notice(['system']);self.assertTrue(flag);self.assertIn('system restart',text)
- def test_individual_flatpak_update_uses_source_commit_and_dependency_review(self):
+ def test_individual_flatpak_update_resolves_commit_in_dependency_review(self):
   target=dict(source='flatpak',id='org.example.App',scope='user',arch='x86_64',branch='stable',remote='flathub',update_commit='b'*64)
   candidate=dict(target,update_commit='a'*64)
   g=group('flatpak',scope='user',targets=[dict(ref='app/org.example.App/x86_64/stable',commit='a'*64)],changes=[dict(info='update',id='app/org.example.App/x86_64/stable',remote='flathub',commit='a'*64)],note='Full dependencies')
   with patch.object(b,'management_flatpaks',return_value=[candidate]) as inventory,patch.object(b,'flatpak_update_group',return_value=g) as review:
    approved=b.plan(target,'update')
   inventory.assert_called_once_with(updates=True,scopes=('user',))
-  self.assertEqual(review.call_args.args[1][0]['commit'],'a'*64);self.assertEqual(approved['changes'],g['changes'])
+  self.assertEqual(review.call_args.args[1],[dict(ref='app/org.example.App/x86_64/stable')]);self.assertEqual(approved['changes'],g['changes'])
  def test_individual_flatpak_apply_uses_reviewed_transaction(self):
   target=dict(source='flatpak',id='org.example.App',scope='user',arch='x86_64',branch='stable',remote='flathub')
   g=group('flatpak',scope='user',targets=[dict(ref='app/org.example.App/x86_64/stable',commit='a'*64)])
@@ -124,6 +124,12 @@ class ManagementTests(unittest.TestCase):
   with patch.object(b,'prepare_all_updates',return_value=approved),patch.object(b,'PackageKit',return_value=pk):result=b.apply_all_updates(approved)
   self.assertEqual(pk.transaction.call_args_list[-1].args,('UpdatePackages','(tas)',(2,['demo;2;arm64;repo'])))
   self.assertTrue(result['restart']);self.assertEqual(result['errors'],[])
+ def test_debian_failure_keeps_restart_requirement_from_partial_changes(self):
+  g=group();approved=plan([g]);pk=Mock()
+  pk.transaction.side_effect=[(g['changes'],[]),b.PackageKitFailure('An update failed',['system'])]
+  with patch.object(b,'prepare_all_updates',return_value=approved),patch.object(b,'PackageKit',return_value=pk):result=b.apply_all_updates(approved)
+  self.assertTrue(result['restart']);self.assertIn('system restart',result['restart_notice'])
+  self.assertEqual(result['completed'],[]);self.assertIn('An update failed',result['errors'][0])
  def test_partial_failure_stops_later_sources_and_reports_completed_changes(self):
   groups=[group(),group('flatpak',targets=[]),group('snap',targets=[dict(name='demo',revision='2')])];approved=plan(groups)
   pk=Mock();pk.transaction.side_effect=[(groups[0]['changes'],[]),([],[])]
@@ -186,6 +192,6 @@ class FlatpakReviewTests(unittest.TestCase):
   ref='app/org.example.App/x86_64/stable';tx=FakeTransaction([FakeOperation(ref)])
   approved=dict(changes=[dict(info='update',id=ref,remote='flathub',commit='a'*64)])
   with patch.object(b,'flatpak_api',return_value=self.api(tx)):b.flatpak_update_group('user',[dict(ref=ref,commit='a'*64)],approved)
-  self.assertTrue(tx.executed);self.assertFalse(tx.noninteractive)
+  self.assertTrue(tx.executed);self.assertFalse(tx.noninteractive);self.assertEqual(tx.targets,[(ref,None)])
 
 if __name__=='__main__':unittest.main()

@@ -21,9 +21,9 @@ static AppRow* row(ui::View* root,const std::string& name){return findView<AppRo
 int main(int argc,char** argv){
  bool live=argc>1 && std::string(argv[1])=="--live";
  auto fixture=std::filesystem::absolute("work/management-fixture");std::filesystem::create_directories(fixture);std::filesystem::create_directories("outputs");
- if(!live){auto provider=(std::filesystem::path(__FILE__).parent_path()/"management_fixture.py").string();setenv("CUTEFISH_APP_CENTER_BACKEND",provider.c_str(),1);setenv("APP_CENTER_MANAGEMENT_FIXTURE_DIR",fixture.c_str(),1);for(auto f:{"updated","apply.json","fail-source"})std::filesystem::remove(fixture/f);}
+ if(!live){auto provider=(std::filesystem::path(__FILE__).parent_path()/"management_fixture.py").string();setenv("CUTEFISH_APP_CENTER_BACKEND",provider.c_str(),1);setenv("APP_CENTER_MANAGEMENT_FIXTURE_DIR",fixture.c_str(),1);for(auto f:{"updated","apply.json","fail-source","partial"})std::filesystem::remove(fixture/f);}
  ui::Application app(argc,argv,ui::Application::Platform::Headless);AppCenter center(app,false);center.show();auto& window=center.window();window.grab();click(window,text(window.contentView(),"Installed"));
- base::Timer poll(&app.loop());int stage=0,ticks=0;
+ base::Timer poll(&app.loop());int stage=0,ticks=0;bool sawAuth=false,sawDownload=false;
  poll.onTimeout=[&]{
   if(++ticks>450){std::cerr<<"Timed out at management stage "<<stage<<"\n";app.quit(1);return;}
   window.grab();auto* root=window.contentView();
@@ -57,13 +57,40 @@ int main(int argc,char** argv){
   else if(stage==6){
    for(auto* dialog:app.windows())if(dialog!=&window && text(dialog->contentView(),"Apply Updates")){click(*dialog,text(dialog->contentView(),"Apply Updates"));stage=7;break;}
   }else if(stage==7 && std::filesystem::exists(fixture/"updated")){
-   for(auto* dialog:app.windows())if(dialog!=&window && contains(dialog->contentView(),"Updates completed.")){click(*dialog,text(dialog->contentView(),"Close"));stage=8;break;}
+   for(auto* dialog:app.windows())if(dialog!=&window && text(dialog->contentView(),"Updates completed")){
+    assert(sawAuth && sawDownload);assert(text(dialog->contentView(),"3 of 3 sources completed."));
+    assert(text(dialog->contentView(),"A system restart is required."));
+    click(*dialog,text(dialog->contentView(),"Close"));stage=8;break;
+   }
+  }else if(stage==7){
+   for(auto* dialog:app.windows())if(dialog!=&window && text(dialog->contentView(),"Applying updates")){
+    if(!sawAuth && text(dialog->contentView(),"Waiting for authentication")){
+     auto* close=findView<ui::DialogButton>(dialog->contentView(),[](auto* b){return text(b,"Close");});
+     assert(close && !close->isEnabled());dialog->onCloseRequested();assert(app.windows().size()==2);sawAuth=true;
+    }
+    if(!sawDownload && text(dialog->contentView(),"Downloading · 40%")){
+     assert(dialog->grab().savePng("work/management-fixture/update-progress.png"));sawDownload=true;
+    }
+   }
   }else if(stage==8 && contains(root,"No updates available") && contains(root,"Restart required")){
    assert(all && !all->isEnabled());assert(std::filesystem::exists(fixture/"apply.json"));
-   std::filesystem::remove(fixture/"updated");std::ofstream(fixture/"fail-source")<<"offline";click(window,text(root,"Check for Updates"));stage=9;
-  }else if(stage==9 && contains(root,"Some update sources are unavailable")){
+   std::filesystem::remove(fixture/"updated");std::ofstream(fixture/"partial")<<"cancel auth";click(window,text(root,"Check for Updates"));stage=9;
+  }else if(stage==9 && all && all->isEnabled()){click(window,all);stage=10;}
+  else if(stage==10){
+   for(auto* dialog:app.windows())if(dialog!=&window && text(dialog->contentView(),"Apply Updates")){click(*dialog,text(dialog->contentView(),"Apply Updates"));stage=11;break;}
+  }else if(stage==11){
+   for(auto* dialog:app.windows())if(dialog!=&window && text(dialog->contentView(),"Updates need attention")){
+    auto* content=dialog->contentView();
+    assert(text(content,"Completed"));assert(text(content,"Not attempted"));assert(text(content,"Authentication was cancelled."));
+    assert(text(content,"A system restart is required."));
+    assert(dialog->grab().savePng("work/management-fixture/update-result.png"));
+    click(*dialog,text(content,"Close"));stage=12;break;
+   }
+  }else if(stage==12 && all && all->isEnabled()){
+   std::ofstream(fixture/"fail-source")<<"offline";click(window,text(root,"Check for Updates"));stage=13;
+  }else if(stage==13 && contains(root,"Some update sources are unavailable")){
    assert(row(root,"Zulu"));assert(all && !all->isEnabled());assert(contains(root,"Source unavailable"));
-   std::cout<<"Unified management filtering, update sorting, global review scope, cancellation, apply and failure/restart states passed.\n";app.quit();
+   std::cout<<"Unified management, authentication and progress, close protection, partial completion and restart passed.\n";app.quit();
   }
  };
  poll.start(100ms);return app.run();
