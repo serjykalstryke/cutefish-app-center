@@ -52,6 +52,11 @@ def pk_info(info):
 class AppCenterError(Exception):
     pass
 
+class PackageKitFailure(AppCenterError):
+    def __init__(self, message, restarts):
+        super().__init__(message)
+        self.restarts = restarts
+
 def emit(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
@@ -102,14 +107,35 @@ class PackageKit:
                                  self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION,
                                  120000, None).unpack()
 
-    def transaction(self, method, signature, values):
+    def transaction(self, method, signature, values, report=None):
         try:
             path = self.call(PK_ROOT, PK_NAME, "CreateTransaction")[0]
         except Exception as e:
             raise AppCenterError("The Debian package service is unavailable. Install packagekit and try again. " + str(e)) from None
         packages, errors, restarts = [], [], []
         finished = [None]
+        method_replied = False
+        method_error = None
+        status = 'unknown'
+        last_package = ''
         loop = self.GLib.MainLoop()
+        if report:
+            import ctypes
+            lib = ctypes.CDLL('libpackagekit-glib2.so.18')
+            status_name = lib.pk_status_enum_to_string
+            status_name.argtypes = [ctypes.c_int]
+            status_name.restype = ctypes.c_char_p
+
+        def reply(bus, result, _user):
+            nonlocal method_replied, method_error
+            try:
+                bus.call_finish(result)
+            except self.GLib.Error as error:
+                method_error = str(error)
+            method_replied = True
+            if method_error or finished[0] is not None:
+                loop.quit()
+
         def signal(bus, sender, obj, iface, name, params, user):
             args = params.unpack()
             if name == "Package":
@@ -123,11 +149,21 @@ class PackageKit:
                 errors.append("The package service requires an additional license, signing key or installation medium. Use the system package tools to resolve it.")
             elif name == "Finished":
                 finished[0] = args[0]
-                loop.quit()
+                if method_replied:
+                    loop.quit()
         def properties(bus, sender, obj, iface, name, params, user):
+            nonlocal status, last_package
             changed = params.unpack()[1]
             n = changed.get("Percentage")
-            if n is not None and 0 <= n <= 100:
+            if report and {'Status', 'Percentage', 'LastPackage'} & changed.keys():
+                if 'Status' in changed:
+                    status = status_name(changed['Status']).decode()
+                if 'LastPackage' in changed:
+                    last_package = changed['LastPackage'].partition(';')[0]
+                phase, message = debian_progress(status, last_package)
+                percent = n if phase in ('downloading', 'applying') and n is not None and 0 <= n <= 100 else None
+                report(message, percent, phase)
+            elif n is not None and 0 <= n <= 100:
                 progress("Working with Debian packages…", n)
         subs = [self.bus.signal_subscribe(PK_NAME, PK_IFACE, None, path, None,
                                          self.Gio.DBusSignalFlags.NONE, signal, None),
@@ -142,11 +178,12 @@ class PackageKit:
                 self.call(path, PK_IFACE, "SetHints", "(a{sv})", ({"interactive": self.GLib.Variant("b", True)},))
             else:
                 self.call(path, PK_IFACE, "SetHints", "(as)", (["interactive=true", "background=false"],))
-            self.call(path, PK_IFACE, method, signature, values)
-            if finished[0] is None:
-                loop.run()
-            if errors or finished[0] != 1:
-                raise AppCenterError("; ".join(errors) or "The package transaction did not complete.")
+            # Dispatch status signals while the method is waiting for its reply.
+            self.bus.call(PK_NAME, path, PK_IFACE, method, self.GLib.Variant(signature, values), None,
+                          self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION, 120000, None, reply, None)
+            loop.run()
+            if method_error or errors or finished[0] != 1:
+                raise PackageKitFailure("; ".join(errors) or method_error or "The package transaction did not complete.", restarts)
             return packages, restarts
         except AppCenterError:
             raise
@@ -169,6 +206,19 @@ class PackageKit:
         if len(packages) != 1:
             raise AppCenterError("More than one package architecture or version matches. Use the system package tools to select one.")
         return packages[0]["id"]
+
+
+def debian_progress(status, package):
+    if status == 'waiting-for-auth':
+        return 'authorization', 'Approve the administrator prompt to continue.'
+    if status == 'waiting-for-lock':
+        return 'waiting', 'Waiting for the Debian package manager to become available.'
+    suffix = f' {package}…' if package else ' packages…'
+    if status.startswith('download'):
+        return 'downloading', 'Downloading' + suffix
+    if status in ('install', 'update', 'remove', 'commit', 'cleanup', 'obsolete', 'run-hook'):
+        return 'applying', 'Applying changes to' + suffix
+    return 'working', 'Preparing Debian package changes…'
 
 
 def dpkg_installed():
@@ -823,7 +873,7 @@ def appimage_feed():
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.3.1"})
+        req = urllib.request.Request(APPIMAGE_FEED, headers={"User-Agent": "CutefishAppCenter/0.3.2"})
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read(CATALOG_MAX_BYTES + 1)
         if len(raw) > CATALOG_MAX_BYTES:
@@ -999,7 +1049,7 @@ def plan(target, action):
             candidate = next((i for i in available if software_key(i)==software_key(selected)), None)
             if candidate is None:
                 raise AppCenterError('This Flatpak no longer has an available update. Check for updates again.')
-            flatpak_group = flatpak_update_group(target['scope'], [dict(ref=ref, commit=candidate.get('update_commit', ''))])
+            flatpak_group = flatpak_update_group(target['scope'], [dict(ref=ref)])
             if flatpak_group is None:
                 raise AppCenterError('No Flatpak changes remain to apply.')
             changes, note = flatpak_group['changes'], flatpak_group['note']
@@ -1494,7 +1544,7 @@ def management_flatpaks(updates=False, refresh=False, scopes=('user', 'system'))
                 item.update({k: v for k, v in metadata.get(arch, {}).get((ident, arch, branch, remote), {}).items()
                              if k not in ('version', 'name')})
                 if updates:
-                    item.update(update_available=True, update_commit=ref.get_latest_commit() or '', update_version=metadata.get(arch, {}).get((ident, arch, branch, remote), {}).get('version', ''))
+                    item.update(update_available=True, update_version=metadata.get(arch, {}).get((ident, arch, branch, remote), {}).get('version', ''))
                 item['install_key'] = software_key(item)
                 items.append(item)
         except GLib.Error as error:
@@ -1628,7 +1678,7 @@ def flatpak_operations(transaction):
     return sorted(result, key=lambda c: (c['id'], c['info']))
 
 
-def flatpak_update_group(scope, targets, approved=None):
+def flatpak_update_group(scope, targets, approved=None, report=None):
     F, GLib, installation = flatpak_api(scope)
     old_umask = os.umask(0o022)
     state = dict(ready=False, changes=[], error='')
@@ -1641,7 +1691,10 @@ def flatpak_update_group(scope, targets, approved=None):
         tx.connect('webflow-start', lambda *_: False)
         tx.connect('basic-auth-start', lambda *_: False)
         for target in targets:
-            tx.add_update(target['ref'], None, target.get('commit') or None)
+            # Resolve the remote commit through the transaction. An installed
+            # ref's latest commit may only describe its local repository.
+            # The ready callbacks compare exact resolved commits before apply.
+            tx.add_update(target['ref'], None, None)
         def ready(transaction):
             try:
                 state['changes'] = flatpak_operations(transaction)
@@ -1657,8 +1710,16 @@ def flatpak_update_group(scope, targets, approved=None):
         # Recheck after authorization as well, before any download/deployment.
         tx.connect('ready', ready)
         def new_operation(_transaction, operation, status):
-            status.connect('changed', lambda p: progress('Flatpak: ' + p.get_status(), p.get_progress()))
-            progress('Flatpak: ' + operation.get_ref())
+            ref = operation.get_ref().split('/')[1]
+            def changed(p):
+                text = p.get_status() or 'Updating ' + ref + '…'
+                percent = None if p.get_is_estimating() else p.get_progress()
+                if report:
+                    report(f'{ref}: {text}', percent)
+                else:
+                    progress(text, percent)
+            status.connect('changed', changed)
+            changed(status)
         if approved is not None:
             tx.connect('new-operation', new_operation)
             tx.connect('operation-error', lambda _tx, _op, error, _details: state.update(error=str(error)) or False)
@@ -1704,7 +1765,7 @@ def prepare_all_updates():
     if deb:
         groups.append(deb)
     for scope in ('system', 'user'):
-        refs = [dict(ref=flatpak_ref(i), commit=i.get('update_commit', '')) for i in items if i['source']=='flatpak' and i['scope']==scope]
+        refs = [dict(ref=flatpak_ref(i)) for i in items if i['source']=='flatpak' and i['scope']==scope]
         if refs:
             group = flatpak_update_group(scope, refs)
             if group:
@@ -1740,7 +1801,7 @@ def restart_notice(restarts):
     return False, ''
 
 
-def wait_snap_update(reply):
+def wait_snap_update(reply, report=None):
     if reply.get('type') != 'async':
         return
     change_id = str(reply.get('change', ''))
@@ -1748,11 +1809,19 @@ def wait_snap_update(reply):
         raise AppCenterError('Invalid Snap update response.')
     while True:
         change = snap_api('/v2/changes/' + change_id)['result']
-        progress('Snap: ' + change.get('summary', 'Updating software…'))
         if change.get('ready'):
             if change.get('err') or change.get('status') != 'Done':
                 raise AppCenterError(change.get('err') or 'Snap updates did not complete.')
             return
+        task = next((task for task in change.get('tasks', []) if task.get('status') == 'Doing'), {})
+        text = task.get('summary') or change.get('summary', 'Updating software…')
+        counts = task.get('progress') or {}
+        done, total = counts.get('done'), counts.get('total')
+        percent = 100 * done / total if isinstance(done, int) and isinstance(total, int) and 0 <= done <= total and total > 1 else None
+        if report:
+            report(text, percent, 'downloading' if task.get('kind', '').startswith('download') else 'working')
+        else:
+            progress('Snap: ' + text, percent)
         time.sleep(0.7)
 
 
@@ -1760,12 +1829,24 @@ def apply_all_updates(approved):
     if not isinstance(approved, dict) or not re.fullmatch(r'[a-f0-9]{64}', str(approved.get('fingerprint', ''))):
         raise AppCenterError('Review all updates before applying them.')
     with mutation_lock():
+        progress('Checking the reviewed updates…')
         current = prepare_all_updates()
         if current['fingerprint'] != approved['fingerprint']:
             raise AppCenterError('Available updates or dependencies changed. Review all updates again; nothing has been applied.')
         completed, errors, pending, restarts = [], [], [], []
+        def notify(index, state, message='', percent=None, phase=''):
+            emit(dict(event='update_progress', index=index, state=state, message=message, percent=percent, phase=phase))
+
         for index, group in enumerate(current['groups']):
-            progress('Updating ' + group['name'] + ' (' + str(index+1) + ' of ' + str(len(current['groups'])) + ')…')
+            last_report = None
+            def report(message, percent=None, phase='working'):
+                nonlocal last_report
+                current_report = (message, percent, phase)
+                if current_report != last_report:
+                    notify(index, 'running', *current_report)
+                    last_report = current_report
+
+            report('Checking the changes for this source…', phase='checking')
             try:
                 if group['source'] == 'deb':
                     # Re-simulate immediately before modification, preserving exact package IDs.
@@ -1773,19 +1854,27 @@ def apply_all_updates(approved):
                     check_protected_changes(changes)
                     if changes_identity(changes) != changes_identity(group['changes']):
                         raise AppCenterError('Debian dependency changes no longer match the review.')
-                    _, restart = PackageKit().transaction('UpdatePackages', '(tas)', (2, group['targets']))
+                    _, restart = PackageKit().transaction('UpdatePackages', '(tas)', (2, group['targets']), report=report)
                     restarts.extend(restart)
                 elif group['source'] == 'flatpak':
-                    flatpak_update_group(group['scope'], group['targets'], approved=group)
+                    flatpak_update_group(group['scope'], group['targets'], approved=group, report=report)
                 else:
                     latest = snap_update_group(management_provider('snap', updates=True))
                     if not latest or latest['targets'] != group['targets']:
                         raise AppCenterError('Snap updates changed. Review all updates again.')
-                    wait_snap_update(snap_api('/v2/snaps', dict(action='refresh', snaps=[t['name'] for t in group['targets']])))
+                    report('Starting the Snap refresh. Approve any administrator prompt.', phase='working')
+                    reply = snap_api('/v2/snaps', dict(action='refresh', snaps=[t['name'] for t in group['targets']]))
+                    wait_snap_update(reply, report=report)
                 completed.append(group['name'])
+                notify(index, 'completed')
             except Exception as error:
+                if isinstance(error, PackageKitFailure):
+                    restarts.extend(error.restarts)
                 errors.append(group['name'] + ': ' + str(error))
                 pending = [g['name'] for g in current['groups'][index+1:]]
+                notify(index, 'failed', str(error))
+                for later in range(index + 1, len(current['groups'])):
+                    notify(later, 'skipped')
                 break
         message = ('No installable updates. Held or blocked updates were left unchanged.' if current['blocked_count'] else 'No updates are available.') if not current['groups'] else 'Updates completed.'
         if errors:
@@ -1796,7 +1885,8 @@ def apply_all_updates(approved):
         restart, notice = restart_notice(restarts)
         if notice:
             message += '\n' + notice
-        return dict(message=message, completed=completed, errors=errors, pending=pending, restart=restart)
+        return dict(message=message, completed=completed, errors=errors, pending=pending,
+                    restart=restart, restart_notice=notice)
 
 
 def listing(request):
@@ -1951,7 +2041,7 @@ def cached_artwork(url):
         return stale
     if not public_https(url, resolve=True):
         return stale
-    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.3.1'})
+    request = urllib.request.Request(url, headers={'User-Agent': 'CutefishAppCenter/0.3.2'})
     try:
         with urllib.request.build_opener(ArtworkRedirect()).open(request, timeout=6) as response:
             raw = response.read(6 * 1024 * 1024 + 1)
