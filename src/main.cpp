@@ -50,7 +50,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.3.1"
+#define APP_CENTER_VERSION "0.3.2"
 #endif
 
 static J branding() {
@@ -108,6 +108,110 @@ protected:
     }
 private: bool m_accent;double m_radius;
 };
+
+class UpdateOperation : public ui::DialogWindow {
+public:
+    UpdateOperation(ui::Window* parent,const J& plan)
+        : ui::DialogWindow(parent,"Software updates",620) {
+        setCloseVisible(false);
+        window()->onCloseRequested=[this]{if(!m_running)close();};
+        auto* content=setContent<ui::Column>();
+        content->setSpacing(14);content->setMargins(ui::Margins::all(20));
+        m_heading=label(content,"Applying updates",22,700,true);
+        m_summary=label(content,"Checking the reviewed updates…",13,400,true);
+        m_scroll=content->addChild<ui::ScrollView>();size(m_scroll,-1,270,true);
+        auto* sources=m_scroll->setContent<ui::Column>();sources->setSpacing(10);
+        for(const auto& group:plan["groups"].toArray()){
+            auto* card=sources->addChild<Panel>();card->setMargins(ui::Margins::all(12));card->setSpacing(6);
+            size(card,-1,-1,true);
+            label(card,str(group,"name"),15,650,true);
+            auto* status=label(card,"Queued",12,550,true);
+            auto* detail=label(card,"",12,400,true);detail->setVisible(false);
+            auto* bar=card->addChild<ui::ProgressBar>();size(bar,-1,6,true);bar->setVisible(false);
+            m_rows.push_back({card,status,detail,bar,"queued"});
+        }
+        m_notice=label(content,"",13,550,true);m_notice->setMaximumLineCount(5);m_notice->setVisible(false);
+        auto* buttons=content->addChild<ui::Row>();size(buttons,-1,-1,true);buttons->addStretch();
+        m_close=buttons->addChild<ui::DialogButton>("Close",true);m_close->setEnabled(false);
+        m_close->onClicked=[this]{if(!m_running)close();};
+    }
+
+    void update(const J& event) {
+        if(!m_running || !event["index"].isNumber())return;
+        auto index=event["index"].toDouble();
+        if(index<0 || index>=m_rows.size())return;
+        auto& row=m_rows[static_cast<size_t>(index)];
+        const auto state=str(event,"state");
+        const bool active=state=="running";
+        if(!active && state!="completed" && state!="failed" && state!="skipped")return;
+        if(active && row.state=="queued")m_scroll->ensureVisible(row.card->geometry());
+        row.state=state;
+        auto status=statusText(state,str(event,"phase"));
+        auto percent=event["percent"].toDouble();
+        const bool measured=event["percent"].isNumber() && percent>=0 && percent<=100;
+        if(active && measured)status+=" · "+std::to_string(static_cast<int>(percent))+"%";
+        row.status->setText(status);
+        auto detail=str(event,"message");
+        row.detail->setText(detail);row.detail->setVisible(!detail.empty());
+        row.bar->setVisible(active);row.bar->setIndeterminate(active && !measured);
+        if(active && measured)row.bar->setValue(percent/100.);
+        m_summary->setText(completionCount());
+    }
+
+    void finish(const J& result) {
+        const bool hasErrors=result["errors"].size()>0;
+        m_heading->setText(hasErrors?"Updates need attention":"Updates completed");
+        m_summary->setText(completionCount()+(hasErrors?". Check for updates before retrying.":"."));
+        finishWithNotice(str(result,"restart_notice"));
+    }
+
+    void fail(const std::string& error,bool reported) {
+        m_heading->setText("Updates need attention");
+        const bool started=std::any_of(m_rows.begin(),m_rows.end(),[](const Row& row){return row.state!="queued";});
+        for(auto& row:m_rows)if(row.state=="queued" || row.state=="running"){
+            row.status->setText(reported && !started?"Not attempted":"Outcome unknown");
+            row.detail->setVisible(false);
+            row.bar->setVisible(false);row.bar->setIndeterminate(false);
+        }
+        m_summary->setText(completionCount()+". Check for updates before retrying.");
+        finishWithNotice(error);
+    }
+
+private:
+    static std::string statusText(std::string_view state,std::string_view phase) {
+        if(state=="completed")return "Completed";
+        if(state=="failed")return "Needs attention";
+        if(state=="skipped")return "Not attempted";
+        if(phase=="authorization")return "Waiting for authentication";
+        if(phase=="waiting")return "Waiting for package manager";
+        if(phase=="downloading")return "Downloading";
+        if(phase=="applying")return "Applying changes";
+        if(phase=="checking")return "Checking changes";
+        return "Working";
+    }
+    struct Row {
+        Panel* card;
+        ui::Label* status;
+        ui::Label* detail;
+        ui::ProgressBar* bar;
+        std::string state;
+    };
+    std::string completionCount() const {
+        const auto done=std::count_if(m_rows.begin(),m_rows.end(),[](const Row& row){return row.state=="completed";});
+        return std::to_string(done)+" of "+std::to_string(m_rows.size())+(m_rows.size()==1?" source completed":" sources completed");
+    }
+    void finishWithNotice(const std::string& text) {
+        m_running=false;
+        m_notice->setText(text);m_notice->setToolTip(text);m_notice->setVisible(!text.empty());
+        m_close->setEnabled(true);
+    }
+    bool m_running=true;
+    std::vector<Row> m_rows;
+    ui::ScrollView* m_scroll;
+    ui::Label *m_heading,*m_summary,*m_notice;
+    ui::DialogButton* m_close;
+};
+
 class AppRow : public ui::Button {
 public:
     explicit AppRow(const J& item): ui::Button("") {
@@ -325,7 +429,9 @@ private:
         m_list->setEnabled(!value);
         m_detail->setEnabled(!value);
     }
-    void request(const J& data, std::function<void(const J&)> done, bool mutating=false) {
+    void request(const J& data, std::function<void(const J&)> done, bool mutating=false,
+                 std::function<void(const J&)> onEvent={},
+                 std::function<void(const std::string&,bool)> onError={}) {
         if(m_preview || m_busy) return;
         cancelDetails();cancelIcons();
         if(mutating){cancelDiscover();cancelUpdateCheck();m_featuredLoaded=false;m_libraryLoaded=false;m_updatesLoaded=false;}
@@ -333,7 +439,7 @@ private:
         m_process=std::make_unique<base::Process>(&m_app.loop());
         m_process->setStandardInput(data.serialize()+"\n");
         m_buffer.clear();
-        m_process->onStandardOutput=[this](std::string_view bytes) {
+        m_process->onStandardOutput=[this,onEvent](std::string_view bytes) {
             m_buffer.append(bytes);
             size_t e;
             while((e=m_buffer.find('\n'))!=std::string::npos) {
@@ -343,14 +449,17 @@ private:
                     auto text=str(*item,"message");
                     auto newline=text.find('\n'); if(newline!=std::string::npos)text.resize(newline);
                     m_status->setText(text);
-                    if((*item)["percent"].isNumber()){m_bar->setIndeterminate(false);m_bar->setValue((*item)["percent"].toDouble()/100.);}
+                    const bool measured=(*item)["percent"].isNumber();
+                    m_bar->setIndeterminate(!measured);
+                    if(measured)m_bar->setValue((*item)["percent"].toDouble()/100.);
                 }
+                if(item && onEvent && str(*item,"event")=="update_progress")onEvent(*item);
             }
         };
-        m_process->onFinished=[this,done](int, bool) {
+        m_process->onFinished=[this,done,onError](int, bool) {
             std::string output=m_process->standardOutput();
             std::string errors=m_process->standardError();
-            m_app.loop().post([this,output,errors,done] {
+            m_app.loop().post([this,output,errors,done,onError] {
                 m_process.reset(); busy(false);
                 J result;
                 size_t pos=0;
@@ -364,7 +473,9 @@ private:
                     std::string error=str(result,"error");
                     if(error.empty())error=errors.empty()?"The software service stopped without returning a result.":errors;
                     m_status->setText("Could not complete the request.");
-                    message("Software operation",error);return;
+                    if(onError)onError(error,str(result,"event")=="result");
+                    else message("Software operation",error);
+                    return;
                 }
                 m_status->setText(str(result,"message").empty()?"Ready":str(result,"message"));
                 done(result);
@@ -374,6 +485,7 @@ private:
         if(const char* env=std::getenv("CUTEFISH_APP_CENTER_BACKEND"))backend=env;
         if(!m_process->start("/usr/bin/python3",{backend})) {
             busy(false);m_status->setText("Could not start the store backend.");
+            if(onError)onError("Could not start the software service.",true);
         }
     }
     void message(const std::string& title, const std::string& text) {
@@ -486,7 +598,7 @@ private:
             const auto key=str(update,"install_key");
             if(!records.contains(key)){auto item=update;item.insert("management",true);records[key]=item;}
             auto& item=records[key];
-            for(auto field:{"package_id","update_available","update_blocked","update_version","update_commit","revision","installed_revision"})
+            for(auto field:{"package_id","update_available","update_blocked","update_version","revision","installed_revision"})
                 if(!update[field].isNull())item.insert(field,update[field]);
         }
         size_t eligible=0,appUpdates=0,blocked=0;
@@ -548,14 +660,23 @@ private:
             auto* confirm=buttons->addChild<ui::DialogButton>("Apply Updates",true);
             confirm->onClicked=[this,plan]{
                 m_review->close();
-                request(J::object({{"op","apply_all_updates"},{"plan",plan}}),[this](const J& result){
-                    m_restartRequired=m_restartRequired || result["restart"].toBool();
-                    message(result["errors"].size()?"Updates need attention":"Software updates",str(result,"message"));
-                    m_libraryLoaded=false;m_updatesLoaded=false;m_variants.clear();refresh();
-                },true);
+                m_app.loop().post([this,plan]{applyAllUpdates(plan);});
             };
             m_review->show();
         });
+    }
+    void applyAllUpdates(const J& plan) {
+        if(m_busy)return;
+        m_updateOperation=std::make_unique<UpdateOperation>(&m_window,plan);
+        m_updateOperation->onClosed=[this]{
+            m_libraryLoaded=false;m_updatesLoaded=false;m_variants.clear();refresh();
+        };
+        m_updateOperation->show();
+        request(J::object({{"op","apply_all_updates"},{"plan",plan}}),[this](const J& result){
+            m_restartRequired=m_restartRequired || result["restart"].toBool();
+            m_updateOperation->finish(result);
+        },true,[this](const J& event){m_updateOperation->update(event);},
+        [this](const std::string& error,bool reported){m_updateOperation->fail(error,reported);});
     }
     void searchFor(const std::string& query) {
         if(m_busy)return;
@@ -704,7 +825,7 @@ private:
                 if(str(m_groups[i][0],"install_key")==priorKey){
                     selected=i;
                     if(priorDetails["details_loaded"].toBool()){
-                        for(auto field:{"update_available","update_blocked","update_version","update_commit","package_id","installed_version"})
+                        for(auto field:{"update_available","update_blocked","update_version","package_id","installed_version"})
                             if(!m_groups[i][0][field].isNull())priorDetails.insert(field,m_groups[i][0][field]);
                         m_groups[i][0]=priorDetails;
                     }
@@ -1033,6 +1154,7 @@ private:
     std::unique_ptr<base::Process> m_process,m_detailProcess,m_discoverProcess,m_iconProcess,m_updateProcess;
     base::Timer m_debounce,m_iconDebounce;
     std::unique_ptr<ui::FileChooser> m_chooser;
+    std::unique_ptr<UpdateOperation> m_updateOperation;
     std::unique_ptr<ui::ConfirmDialog> m_message;
     std::unique_ptr<ui::DialogWindow> m_review,m_imageViewer;
 };
