@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.3.2_amd64.deb
-sudo apt install ./cutefish-app-center_0.3.2_amd64.deb
+    --output cutefish-app-center_0.3.3_amd64.deb
+sudo apt install ./cutefish-app-center_0.3.3_amd64.deb
 cutefish-app-center
 ```
 

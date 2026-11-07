@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3 — 2026-11-06
+
+- List Debian updates only when the offered version is newer than the installed package for that architecture.
+- Reject empty Debian update reviews and verify the installed versions before marking a single update or Update All group complete.
+- Keep Debian package versions distinct from catalog release labels.
+
 ## 0.3.2 — 2026-11-06
 
 - Show each source in the Update All progress window, with authentication, download and apply phases when reported by the provider.
