@@ -193,3 +193,17 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
 - Real multi-provider update failure/recovery and authentication remain to be
   exercised on a disposable machine. Snap dependency changes are resolved by
   snapd at execution; there is no cross-provider rollback or AppImage updater.
+
+## 0.3.1 Application search and source choices — November 6, 2026
+
+- All 142 backend and protocol checks pass. Grouping checks cover shared IDs,
+  legacy Chromium launchers, ambiguous names, distinct editions, exact source
+  identities and result limits.
+- All six native checks pass. The search fixture exercises one card with five
+  choices, installed source preference, remembered selection, cancellation of
+  outdated details, and actions targeting the selected source.
+- Live searches group Firefox across Flatpak, Snap and AppImage, and Chromium
+  across Debian, Flatpak and Snap. Firefox ESR and Chrome remain separate
+  applications. The native test rendered the live Firefox card.
+- The 0.3.1 package passed runtime linkage checks. Its executable and backend
+  match the tested build. APT's preview selects only the App Center upgrade.

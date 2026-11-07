@@ -9,7 +9,7 @@ The backend has four providers:
 - Snap: HTTP over the snapd Unix socket, `X-Allow-Interaction: true`, asynchronous change polling and explicit error handling.
 - AppImage: AppImageHub feed discovery with a 24-hour cache and a browser handoff; a content-addressed personal library under `$XDG_DATA_HOME/cutefish-app-center/appimages/<sha256>`, with atomic metadata/desktop-entry writes. A bounded `unsquashfs` reader extracts only embedded metadata/icon bytes; the AppImage runtime and application are never executed during import. Existing metadata is migrated once when the library is read.
 
-Source entries only merge when a shared AppStream identity is known. The package source, scope and ref remain attached to each variant throughout the UI.
+Search groups source choices using shared AppStream/desktop/common IDs, then unambiguous exact name/package aliases. Conflicting known identities and edition qualifiers prevent weak joins; unknown records cannot bridge two known applications. There is no fuzzy matching or application-name whitelist. Grouping affects the presentation of search results. The package source, scope, ref and immutable search variant key remain attached to each choice. Management inventory retains distinct installations.
 
 Search ranks candidates before applying provider and global limits. Exact names/IDs lead, then category matches and names, keywords, summaries and description text. A small vocabulary maps common browser/editor/player queries to AppStream categories; app names and availability come from providers, not a curated application list. Category searches require category or short-purpose evidence and exclude helper packages and incidental long-description matches. Management inventory is untruncated, locally filtered and sorted with available updates first.
 
@@ -136,3 +136,30 @@ application restarts, session restarts and system restarts.
 
 The libflatpak update flow follows the upstream
 [transaction API](https://docs.flatpak.org/en/latest/libflatpak-api-reference.html).
+
+
+## Application-centered search
+
+Search is ranked before grouping. The backend deduplicates exact source records,
+joins explicit identifiers first, and considers conservative lexical aliases
+against that complete identity graph. Ambiguous aliases and competing matches
+remain separate. ESR/beta/nightly/unstable/canary qualifiers distinguish weak
+name matches; branches of one explicitly identified Flatpak app stay selectable.
+Installed native packages missing catalog metadata can use their package-owned
+visible desktop launcher as identity evidence. Non-application Debian packages
+remain independently searchable rather than alternative installers for an app.
+
+The 300-result bound applies to application groups; every variant in an included
+group is retained. Each variant carries an application presentation key, common
+title/summary/artwork, available-provider labels and a source key derived from
+its exact original target. Existing installations sort first, then stable
+choices and Debian/Flatpak/Snap/AppImage order. Source completion order does not
+set the application's position. The native card displays the common title and
+providers, while its dropdown shows the exact source and installation status.
+Duplicate labels include package/ref architecture to disambiguate choices.
+
+Selection is remembered per application for the session. Changing source
+cancels the old detail process and only its current generation can render.
+The source-specific publisher, version, permissions, screenshots and actions
+remain attached to that selected target. Operations use the exact installation
+identifier for that choice.
