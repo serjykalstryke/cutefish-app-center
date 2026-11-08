@@ -111,8 +111,18 @@ int main(int argc,char** argv){
         } else if(stage==10 && text(root,"App Catalog") && text(root,"Explore categories")){
             assert(search()->text().empty());assert(source()->currentIndex()==0);assert(!back()->isVisible());assert(!text(root,"Example Team"));
             click(window,findView<FeaturedCard>(root,[](auto*){return true;}));stage=11;
-        } else if(stage==11 && text(root,"Search Results") && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
-            click(window,back());stage=12;
+        } else if(stage==11 && text(root,"GIMP") && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            // The fixture's featured name differs from its query and result
+            // name, so a generic or query-derived heading cannot pass.
+            assert(search()->text()=="example");assert(!text(root,"Search Results"));
+            assert(window.grab().savePng("work/home-fixture/featured-selection.png"));
+            source()->setCurrentIndex(1);source()->onActivated(1);stage=17;
+        } else if(stage==17 && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            assert(text(root,"GIMP"));assert(!text(root,"Search Results"));click(window,text(root,"Reload"));stage=18;
+        } else if(stage==18 && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            assert(text(root,"GIMP"));search()->setText("changed");search()->onTextEdited();stage=19;
+        } else if(stage==19 && text(root,"Search Results") && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            assert(!text(root,"GIMP"));click(window,back());stage=12;
         } else if(stage==12 && text(root,"App Catalog")){
             click(window,text(root,"Audio & Video"));stage=13;
         } else if(stage==13 && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
