@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — 2026-11-08
+
+- Add Settings in the sidebar and application menu, with Ctrl+, to configure preferred application format order.
+- Persist exact per-app source choices across sessions, with controls to forget one app, clear saved choices, disable remembering, and restore defaults.
+- Prefer existing installations unless an explicit remembered choice is available, and fall back to installed/preferred formats when a saved choice is unavailable. Management and updates keep their exact installed targets.
+- Store preferences as a private, atomically replaced JSON file, report read/write failures, and isolate native-test settings from the user’s preferences.
+
 ## 0.3.6 — 2026-11-08
 
 - Keep the featured app’s display name as the page heading when opening a recommendation, including after source changes and Reload.

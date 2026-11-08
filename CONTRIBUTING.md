@@ -18,7 +18,7 @@ Before submitting a change:
    `dbus-run-session -- python3 tests/test_packagekit_protocol.py -v` with
    `python3-gi`, `dbus` and `libpackagekit-glib2-18` installed.
 3. Build native UI changes against the current Cutefish toolkit and check
-   the affected flow. `-DAPP_CENTER_BUILD_NATIVE_TEST=ON` builds the inventory, details, home-page, asynchronous-icon unified-management and cross-provider search headless smoke tests.
+   the affected flow. `-DAPP_CENTER_BUILD_NATIVE_TEST=ON` builds inventory, details, home, asynchronous-icon, management, search and settings headless checks. These use isolated preference files.
 4. Use a fresh build directory and the system compiler for a release. The package script must pass its runtime linkage check against the target toolkit.
 5. Test package mutations on a disposable Debian 13 system. Distinguish mock or
    protocol tests from real install/update/remove results in your pull request.

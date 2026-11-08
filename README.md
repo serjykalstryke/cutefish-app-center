@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.3.6_amd64.deb
-sudo apt install ./cutefish-app-center_0.3.6_amd64.deb
+    --output cutefish-app-center_0.4.0_amd64.deb
+sudo apt install ./cutefish-app-center_0.4.0_amd64.deb
 cutefish-app-center
 ```
 
@@ -156,6 +156,10 @@ normal system installation.
   this page. Ctrl+O opens the native file chooser.
 - **About:** view the app version, David Stinnett’s author credit, license and
   project links. The application-name menu opens the same page.
+- **Settings:** arrange Native, Flatpak, Snap and AppImage by preference, choose
+  whether source selections are remembered between sessions, clear saved
+  choices, or restore defaults. Settings is also in the application-name menu
+  and opens with Ctrl+,.
 
 ```sh
 cutefish-app-center ~/Downloads/example.deb
@@ -164,10 +168,19 @@ cutefish-app-center ~/Downloads/Example.AppImage
 
 Search shows one entry per application, with its available formats listed on
 the card. Use the **Software source** dropdown on the detail card to choose
-Debian, Flatpak, Snap or AppImage. App Center selects an existing installation
-first. For a new app it prefers Debian, then Flatpak, Snap and AppImage. The
-dropdown shows availability and installation status and remembers your choice
-when you return to that application during the session.
+Debian, Flatpak, Snap or AppImage. An available saved choice takes precedence;
+otherwise App Center selects an existing installation, then follows the format
+order in Settings for new applications. The initial order is Debian, Flatpak,
+Snap, AppImage. The dropdown retains the exact installation scope, branch and
+source choice across sessions when remembering is enabled. **Use Default Source**
+forgets that app's choice and applies the current preference order. An unavailable
+saved choice falls back to installed/preferred formats. Preferences do not move
+installed applications between formats or change their update targets.
+
+Preferences are saved automatically. See [preference storage](docs/PREFERENCES.md)
+for the file location, schema and error handling. This first Settings release
+covers source selection; repository/provider setup, release-channel controls,
+background checks, panel integration and automatic installation are later stages.
 
 Common catalog/desktop identifiers join packages for the same application.
 Exact name/package aliases fill metadata gaps only where they do not conflict
@@ -291,7 +304,14 @@ CUTEFISH_APP_CENTER_BACKEND="$PWD/backend/app_center_backend.py" \
 ./build/cutefish-app-center-icons-smoke
 ./build/cutefish-app-center-management-smoke
 ./build/cutefish-app-center-search-smoke
+./build/cutefish-app-center-settings-smoke
 ```
+
+Native checks use private preference files, including live read-only checks.
+The settings smoke test verifies format priority, exact saved selections across
+an application restart, clearing and disabling saved choices, default restoration,
+invalid/unwritable files, multiple writers, and light/dark rendering. Its provider
+fixture does not modify installed software.
 
 The search smoke test uses a private cross-provider fixture to check one app
 card, exact source choices, installed-source preference, source-bound actions,
