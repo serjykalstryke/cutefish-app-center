@@ -64,12 +64,16 @@ int main(int argc,char** argv){
     }
     ui::Application app(argc,argv,ui::Application::Platform::Headless);AppCenter center(app,false);center.show();auto& window=center.window();window.grab();
     assert(app.mainMenu());assert(app.mainMenu()->submenu(0)->role()==ui::MenuRole::Application);
-    base::Timer poll(&app.loop());int stage=0,ticks=0,readyTicks=0;
+    auto back=[&]{return findView<ui::Button>(window.contentView(),[](auto* button){return button->toolTip()=="Back to App Catalog";});};
+    auto search=[&]{return findView<ui::SearchField>(window.contentView(),[](auto*){return true;});};
+    auto source=[&]{return findView<ui::ComboBox>(window.contentView(),[](auto* combo){return combo->items().size()==5 && combo->items()[0]=="All sources";});};
+    base::Timer poll(&app.loop());int stage=0,ticks=0,readyTicks=0,returnedAt=0;
     poll.onTimeout=[&]{
         if(++ticks>250){std::cerr<<"Timed out at home stage "<<stage<<"\n";app.quit(1);return;}
         window.grab();auto* root=window.contentView();
         if(stage==0 && text(root,"Firefox") && text(root,"LibreOffice") && text(root,"VLC")){
             if(++readyTicks<4)return;
+            assert(text(root,"Catalog"));assert(text(root,"App Catalog"));assert(!text(root,"Discover"));assert(back() && !back()->isVisible());
             assert(text(root,"Explore categories"));assert(text(root,"1 / 2"));assert(!text(root,"Your software,\nin one place."));assert(!text(root,"Choose your source"));
             assert(findView<CategoryTile>(root,[](auto*){return true;}));assert(findView<FeaturedCard>(root,[](auto*){return true;}));
             checkThemeIcons(window,"discover",8,false);
@@ -90,12 +94,37 @@ int main(int argc,char** argv){
             auto* drop=findView<ui::FileDropArea>(root,[](auto*){return true;});drop->onDropped({"file:///tmp/Example%20Package.deb"});stage=4;
         } else if(stage==4 && text(root,"Example Package") && text(root,"Install")){
             assert(text(root,"Selected file"));assert(text(root,"Example Package.deb"));assert(!findView<FeaturedCard>(root,[](auto*){return true;}));
-            click(window,text(root,"Discover"));stage=5;
+            click(window,text(root,"Catalog"));stage=5;
         } else if(stage==5 && text(root,"Featured apps") && text(root,"Explore categories")){
             assert(!text(root,"Example Package"));assert(!text(root,"Choose your source"));click(window,text(root,"Internet"));stage=6;
-        } else if(stage==6 && text(root,"Example Team") && !text(root,"Loading app details…")){
-            auto* search=findView<ui::SearchField>(root,[](auto*){return true;});assert(search->text()=="internet");assert(text(root,"Open"));
-            std::cout<<"Discover carousel, category search, About credit, file drop/review, navigation and live light/dark icon switching passed.\n";app.quit();
+        } else if(stage==6 && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            assert(search()->text()=="internet");assert(text(root,"Internet"));assert(!text(root,"App Catalog"));assert(text(root,"Open"));assert(back()->isVisible() && back()->isEnabled());
+            assert(window.grab().savePng("work/home-fixture/category.png"));
+            source()->setCurrentIndex(3);source()->onActivated(3);stage=7;
+        } else if(stage==7 && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            assert(text(root,"Internet"));assert(source()->currentIndex()==3);
+            click(window,text(root,"Reload"));stage=8;
+        } else if(stage==8 && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            assert(text(root,"Internet"));search()->setText("example");search()->onTextEdited();stage=9;
+        } else if(stage==9 && text(root,"Search Results") && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            assert(!text(root,"Internet"));click(window,back());stage=10;
+        } else if(stage==10 && text(root,"App Catalog") && text(root,"Explore categories")){
+            assert(search()->text().empty());assert(source()->currentIndex()==0);assert(!back()->isVisible());assert(!text(root,"Example Team"));
+            click(window,findView<FeaturedCard>(root,[](auto*){return true;}));stage=11;
+        } else if(stage==11 && text(root,"Search Results") && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            click(window,back());stage=12;
+        } else if(stage==12 && text(root,"App Catalog")){
+            click(window,text(root,"Audio & Video"));stage=13;
+        } else if(stage==13 && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            assert(text(root,"Audio & Video"));assert(search()->text()=="audio video");
+            ui::TestInput::setKeyboardFocus(window,true);ui::TestInput::typeKey(window,ui::key::Left,ui::AltModifier);stage=14;
+        } else if(stage==14 && text(root,"App Catalog")){
+            assert(!back()->isVisible());search()->setText("example");search()->onAccepted();stage=15;
+        } else if(stage==15 && text(root,"Search Results") && text(root,"Example Team") && !text(root,"Loading app details…") && back()->isEnabled()){
+            search()->setText("pending");search()->onTextEdited();click(window,back());returnedAt=ticks;stage=16;
+        } else if(stage==16 && ticks-returnedAt>=8){
+            assert(text(root,"App Catalog"));assert(text(root,"Explore categories"));assert(search()->text().empty());assert(!text(root,"Search Results"));assert(!back()->isVisible());
+            std::cout<<"Catalog naming, category headings, source/reload preservation, featured and typed searches, Back/Alt+Left, debounce cancellation, file review and theme switching passed.\n";app.quit();
         }
     };
     poll.start(100ms);return app.run();

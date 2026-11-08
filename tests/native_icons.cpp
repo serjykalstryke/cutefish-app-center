@@ -35,7 +35,7 @@ int main(int argc,char** argv){
             // Navigate while the icon subprocess is deliberately stalled.
             click(window,text(root,"About"));assert(text(root,"Created by"));stage=1;
         }else if(stage==1){
-            click(window,text(root,"Discover"));search("new");stage=2;
+            click(window,text(root,"Catalog"));search("new");stage=2;
         }else if(stage==2 && text(root,"new App 0")){
             auto* first=findView<AppRow>(root,[](auto* r){return text(r,"new App 0");});if(!loaded(first))return;
             assert(!text(root,"old App 0"));

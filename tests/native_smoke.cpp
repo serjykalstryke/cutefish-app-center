@@ -44,10 +44,11 @@ int main(int argc,char** argv) {
             auto* search=findSearch(w.contentView());click(w,search);ui::TestInput::setKeyboardFocus(w,true);ui::TestInput::typeText(w,"snapd");stage=1;
         } else if(stage==1 && ready && containsLabel(w.contentView(),"snapd") && !containsLabel(w.contentView(),"300 entries")) {
             w.grab().savePng("work/installed-smoke.png");
-            click(w,findLabel(w.contentView(),"Discover"));w.grab();
+            click(w,findLabel(w.contentView(),"Catalog"));w.grab();
             assert(findLabel(w.contentView(),"Explore categories"));
             click(w,findLabel(w.contentView(),"Internet"));stage=2;
         } else if(stage==2 && containsLabel(w.contentView(),"best matches first")) {
+            assert(findLabel(w.contentView(),"Internet"));
             assert(findSearch(w.contentView())->text()=="internet");
             assert(findLabel(w.contentView(),"Brave"));
             assert(findLabel(w.contentView(),"Google Chrome"));
