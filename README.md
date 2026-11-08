@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.3.4_amd64.deb
-sudo apt install ./cutefish-app-center_0.3.4_amd64.deb
+    --output cutefish-app-center_0.3.5_amd64.deb
+sudo apt install ./cutefish-app-center_0.3.5_amd64.deb
 cutefish-app-center
 ```
 
@@ -137,9 +137,13 @@ normal system installation.
 
 ## Using App Center
 
-- **Discover:** browse a featured-app carousel and application categories, or
+- **Catalog:** browse a featured-app carousel and application categories, or
   search configured Debian, Flatpak, Snap and AppImage sources. Selecting a card
   opens the existing search-and-details view so you can compare software sources.
+  The main page is titled **App Catalog**. Opening a category uses its name as
+  the heading, while a new text search shows **Search Results**. **Back** beside
+  the heading returns to App Catalog and clears the query and source filter.
+  The same action is available in the View menu and through Alt+Left.
 - **Installed:** manage installed apps and updates together. Applications appear
   by default, with available updates first. Choose **All software** to include
   libraries, services and runtimes, or **Updates only** to narrow the list.
@@ -216,12 +220,12 @@ colors.
 Search ranks exact app names and identifiers first, followed by app categories,
 names, keywords and summaries. Queries such as **web browsers**, **image editors**,
 **text editors** and **media players** recognize their category and common aliases.
-The Discover categories use these same searches. Broad category searches filter
+The Catalog categories use these same searches. Broad category searches filter
 incidental description matches and helper packages; exact package names still
 find libraries and other technical packages.
 
 Search results come from your configured sources and are ranked independently
-of the featured selection. Discover presents a small editorial selection of
+of the featured selection. App Catalog presents a small editorial selection of
 common desktop apps only when they are available in configured local Debian
 or Flatpak catalogs. Its carousel does not rotate automatically. Flatpak category search uses its existing local AppStream catalog and
 checks exact available app refs. Debian reads its AppStream XML/DEP-11 YAML catalogs through libappstream,

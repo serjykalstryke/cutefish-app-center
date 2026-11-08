@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.5 — 2026-11-08
+
+- Rename the sidebar and View menu entry to Catalog and the landing heading to App Catalog.
+- Give category results their own section headings, preserved through source changes and Reload. New text searches show Search Results.
+- Add Back beside result headings, in the View menu and through Alt+Left, returning to App Catalog with query and source filters cleared.
+- Cancel pending search debounces when navigating so they cannot reopen results after returning.
+
 ## 0.3.4 — 2026-11-08
 
 - Render sidebar, category and local-file interface icons with the live Cutefish text palette for light and dark appearances.
