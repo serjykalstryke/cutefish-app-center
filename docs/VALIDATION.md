@@ -242,3 +242,19 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   replies that leave the installed version unchanged.
 - Installed App Center 0.3.3 on the development host. The Cutefish Installed
   page showed no updates after a fresh source check.
+
+
+## 0.3.4 Theme-aware interface icons — November 8, 2026
+
+- Replaced fixed-color/theme-name interface artwork with toolkit symbolic
+  glyphs that resolve the current text palette each time they paint. Category
+  SVGs ship in the executable; application logos retain their original colors.
+- All 147 automated checks and six native checks pass. The home check switches
+  the same live view light/dark/light and verifies rendered pixels for four
+  navigation glyphs, all eight categories and the file-import glyph.
+- The live read-only catalog run also passes. Light/dark Discover and import
+  screenshots were inspected, including the real Firefox, LibreOffice and VLC
+  artwork. Headless theme switching does not change desktop preferences.
+- The system-compiler Release build passes runtime linkage verification. The
+  0.3.4 Debian package contains the tested executable and unchanged backend.
+  APT's preview selects one App Center upgrade with no removals or dependencies.
