@@ -10,6 +10,7 @@
 inline void registerInterfaceIcons() {
     const std::string start = R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">)";
     const std::pair<const char*, const char*> glyphs[] = {
+        {"app-center-settings", R"(<path d="M4 6h4m4 0h8M4 12h10m4 0h2M4 18h2m4 0h10"/><circle cx="10" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/>)"},
         {"app-center-internet", R"(<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18M5 6.5h14M5 17.5h14"/>)"},
         {"app-center-graphics", R"(<path d="m13 4 7 7M4 20l4-1 13-13a2.1 2.1 0 0 0-3-3L5 16zM5 16l3 3"/>)"},
         {"app-center-office", R"(<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8zM14 3v5h5M9 12h6M9 16h6"/>)"},

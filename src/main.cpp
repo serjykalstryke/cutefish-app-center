@@ -35,10 +35,12 @@
 #include <ui/progress_bar.h>
 #include <ui/scroll_view.h>
 #include <ui/search_field.h>
+#include <ui/switch.h>
 #include <ui/theme.h>
 #include <ui/window.h>
 #include <ui/window_header.h>
 #include "interface_icons.h"
+#include "preferences.h"
 
 namespace ui = cutefish::ui;
 namespace base = cutefish::base;
@@ -52,7 +54,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.3.6"
+#define APP_CENTER_VERSION "0.4.0"
 #endif
 
 static J branding() {
@@ -99,6 +101,17 @@ static std::string variantKey(const J& item) {
     std::string key;
     for(auto field:{"source","id","scope","remote","branch","arch","architecture","channel","path"})key+=str(item,field)+"\n";
     return key;
+}
+static size_t preferredVariant(const std::vector<J>& choices,const Preferences& preferences,const std::string& remembered={}) {
+    if(!remembered.empty())for(size_t n=0;n<choices.size();n++)if(variantKey(choices[n])==remembered)return n;
+    const bool installed=std::any_of(choices.begin(),choices.end(),[](const J& item){return item["installed"].toBool();});
+    const auto order=preferences.sourceOrder();size_t selected=0,best=order.size()+1;
+    for(size_t n=0;n<choices.size();n++){
+        if(installed && !choices[n]["installed"].toBool())continue;
+        auto rank=static_cast<size_t>(std::find(order.begin(),order.end(),str(choices[n],"source"))-order.begin());
+        if(rank<best){best=rank;selected=n;}
+    }
+    return selected;
 }
 class Panel : public ui::Column {
 public:
@@ -329,6 +342,7 @@ class AppCenter {
 public:
     AppCenter(ui::Application& app, bool preview): m_app(app), m_preview(preview), m_debounce(&app.loop()), m_iconDebounce(&app.loop()) {
         registerInterfaceIcons();
+        m_sourceChoices=m_preferences.choices();
         auto brand=branding();
         const auto displayName=brand["display_name"].toString("Cutefish App Center");
         m_displayName=displayName;
@@ -362,6 +376,7 @@ public:
             button->onClicked=[this,page=entry[1]]{navigate(page);};m_nav.push_back(button);m_navPages.push_back(entry[1]);
         }
         sidebar->addStretch();
+        auto* settings=sidebar->addChild<NavigationItem>("Settings","app-center-settings");settings->onClicked=[this]{navigate("settings");};m_nav.push_back(settings);m_navPages.push_back("settings");
         auto* about=sidebar->addChild<NavigationItem>("About","info");about->onClicked=[this]{navigate("about");};m_nav.push_back(about);m_navPages.push_back("about");
         auto* main=body->addChild<ui::Column>(); size(main,-1,-1,true,true);
         main->setMargins({26,0,26,18}); main->setSpacing(14);
@@ -549,10 +564,11 @@ private:
         m_back->setVisible(results);
         m_controls->setVisible(catalogPage);m_metadataControls->setVisible(false);m_managementControls->setVisible(m_page=="installed");
         m_reload->setText(m_page=="installed"?"Check for Updates":"Reload");
-        m_title->setText(m_page=="files"?"Install from File":m_page=="about"?"About":m_page=="installed"?"Installed":results?(m_browseTitle.empty()?"Search Results":m_browseTitle):"App Catalog");
+        m_title->setText(m_page=="files"?"Install from File":m_page=="about"?"About":m_page=="settings"?"Settings":m_page=="installed"?"Installed":results?(m_browseTitle.empty()?"Search Results":m_browseTitle):"App Catalog");
         m_subtitle->setVisible(m_page!="about" && !(m_page=="discover" && m_search->text().size()<2));
         if(m_page=="files"){m_subtitle->setText("Review a .deb or AppImage before installing.");filePage();return;}
         if(m_page=="about"){aboutPage();return;}
+        if(m_page=="settings"){m_subtitle->setText("Choose how App Center selects software sources.");settingsPage();return;}
         if(m_page=="discover" && m_search->text().size()<2){landing();loadDiscover();return;}
         m_subtitle->setText(m_page=="discover"?"Find apps across your configured software sources.":"Manage installed apps and keep all software up to date.");
         if(m_page=="installed"){
@@ -761,6 +777,62 @@ private:
             tile->onClicked=[this,query,name]{m_app.loop().post([this,query,name]{searchFor(query,name);});};
         }
     }
+    void settingsPage() {
+        resetPage();
+        auto* content=m_list->setContent<ui::Column>();content->setSpacing(18);content->setMargins({0,12,0,18});
+        const bool editable=!m_preview && m_preferences.error().empty();
+        if(!m_preferences.error().empty()){
+            auto* notice=content->addChild<Panel>(true);size(notice,-1,-1,true);
+            label(notice,"Preferences need attention",16,650,true);label(notice,m_preferences.error(),13,400,true);
+        }
+        auto* formats=content->addChild<Panel>();size(formats,-1,-1,true);
+        label(formats,"Preferred application formats",19,650,true);
+        label(formats,"For new apps, try formats in this order. Existing installations are selected first unless you have saved another choice for that app.",13,400,true);
+        const auto order=m_preferences.sourceOrder();
+        const std::map<std::string,std::string> names={{"deb","Native (Debian)"},{"flatpak","Flatpak"},{"snap","Snap"},{"appimage","AppImage"}};
+        for(size_t n=0;n<order.size();n++){
+            auto* row=formats->addChild<ui::Row>();row->setSpacing(12);size(row,-1,36,true);
+            size(label(row,std::to_string(n+1),12,550),22,-1);label(row,names.at(order[n]),14,550);
+            auto* up=row->addChild<ui::Button>("↑");size(up,36,32);up->setToolTip("Move "+names.at(order[n])+" up");up->setEnabled(editable && n>0);
+            auto* down=row->addChild<ui::Button>("↓");size(down,36,32);down->setToolTip("Move "+names.at(order[n])+" down");down->setEnabled(editable && n+1<order.size());
+            auto move=[this,order,n](int direction){
+                auto changed=order;std::swap(changed[n],changed[static_cast<size_t>(int(n)+direction)]);
+                std::string error;
+                if(!m_preferences.setOrder(changed,error)){message("Preferences",error);return;}
+                m_app.loop().post([this]{if(m_page=="settings")settingsPage();});
+            };
+            up->onClicked=[move]{move(-1);};down->onClicked=[move]{move(1);};
+        }
+        label(formats,"AppImages from the catalog still open the publisher’s download page.",12,400,true);
+        auto* choices=content->addChild<Panel>();size(choices,-1,-1,true);
+        label(choices,"Application source choices",19,650,true);
+        auto* remember=choices->addChild<ui::Switch>("Remember source choices between sessions");size(remember,-1,36,true);
+        remember->setChecked(m_preferences.rememberChoices());remember->setEnabled(editable);
+        remember->onToggled=[this,remember](bool checked){
+            std::string error;
+            if(!m_preferences.setRememberChoices(checked,error)){remember->setChecked(m_preferences.rememberChoices());message("Preferences",error);return;}
+            if(!checked)m_sourceChoices.clear();
+            m_app.loop().post([this]{if(m_page=="settings")settingsPage();});
+        };
+        label(choices,"Choose a source on an app’s detail card to remember it. Turning this off clears saved choices.",13,400,true);
+        const auto count=m_preferences.choices().size();
+        label(choices,std::to_string(count)+(count==1?" saved application choice":" saved application choices"),12,550,true);
+        auto* clear=choices->addChild<ui::Button>("Clear Saved Choices");size(clear,190,36);clear->setEnabled(editable && (!m_sourceChoices.empty() || count>0));
+        clear->onClicked=[this]{
+            std::string error;
+            if(!m_preferences.clearChoices(error)){message("Preferences",error);return;}
+            m_sourceChoices.clear();m_app.loop().post([this]{if(m_page=="settings")settingsPage();});
+        };
+        auto* reset=content->addChild<Panel>();size(reset,-1,-1,true);
+        label(reset,"Restore preferences",16,650,true);
+        label(reset,"Restore the default format order and clear saved choices. Installed applications and software sources are kept.",13,400,true);
+        auto* restore=reset->addChild<ui::Button>("Restore Defaults");size(restore,170,36);restore->setEnabled(!m_preview);
+        restore->onClicked=[this]{
+            std::string error;
+            if(!m_preferences.reset(error)){message("Preferences",error);return;}
+            m_sourceChoices.clear();m_app.loop().post([this]{if(m_page=="settings")settingsPage();});
+        };
+    }
     void filePage() {
         resetPage();
         auto* content=m_list->setContent<ui::Column>();content->setSpacing(18);content->setMargins({0,12,0,18});
@@ -923,9 +995,7 @@ private:
     void select(size_t i) {
         for(size_t n=0;n<m_rows.size();n++)m_rows[n]->selected(n==i);
         m_variants=m_groups[i];m_activeApplication=groupKey(m_variants[0]);size_t selected=0;
-        if(m_page!="installed" && m_sourceChoices.contains(m_activeApplication)){
-            for(size_t n=0;n<m_variants.size();n++)if(variantKey(m_variants[n])==m_sourceChoices[m_activeApplication]){selected=n;break;}
-        }
+        if(m_page!="installed")selected=preferredVariant(m_variants,m_preferences,m_sourceChoices.contains(m_activeApplication)?m_sourceChoices[m_activeApplication]:"");
         details(selected);
     }
     void cancelDetails() {
@@ -936,6 +1006,8 @@ private:
         m_mainMenu=std::make_unique<ui::Menu>();
         auto* application=m_mainMenu->addSubmenu(m_displayName);application->setRole(ui::MenuRole::Application);
         application->addItem("About "+m_displayName,[this]{navigate("about");});
+        auto settings=application->addItem("Settings…",[this]{navigate("settings");});application->setItemKeyEquivalent(settings,",",ui::ControlModifier);
+        m_window.addShortcut(ui::ControlModifier,',',[this]{navigate("settings");});
         application->addSeparator();
         auto quit=[this]{if(m_mutating)message("Software operation","Please wait for the software operation to finish before quitting.");else m_app.quit();};
         auto q=application->addItem("Quit "+m_displayName,quit);application->setItemKeyEquivalent(q,"q",ui::ControlModifier);
@@ -953,7 +1025,7 @@ private:
         m_window.addShortcut(ui::AltModifier,ui::key::Left,[this]{backToCatalog();});
         view->onAboutToShow=[this,view,back]{view->setItemEnabled(back,!m_busy && m_back->isVisible());};
         view->addSeparator();
-        auto search=[this]{if(m_busy)return;if(m_page=="files" || m_page=="about")navigate("discover");m_search->setFocus();};
+        auto search=[this]{if(m_busy)return;if(m_page!="discover" && m_page!="installed")navigate("discover");m_search->setFocus();};
         auto find=view->addItem("Search",search);view->setItemKeyEquivalent(find,"f",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'f',search);
         auto reload=view->addItem("Reload",[this]{reloadView();});view->setItemKeyEquivalent(reload,"r",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'r',[this]{reloadView();});
         auto* software=m_mainMenu->addSubmenu("Software");
@@ -1061,7 +1133,17 @@ private:
             variants->onActivated=[this](int n){
                 if(n<0 || size_t(n)>=m_variants.size())return;
                 m_sourceChoices[m_activeApplication]=variantKey(m_variants[n]);
+                std::string error;
+                if(!m_preview && !m_preferences.setChoice(m_activeApplication,variantKey(m_variants[n]),error))message("Source choice",error+" This choice will apply only for this session.");
                 m_app.loop().post([this,n]{details(n);});
+            };
+            auto* reset=panel->addChild<ui::Button>("Use Default Source");size(reset,-1,32,true);
+            reset->setEnabled(!m_preview && m_sourceChoices.contains(m_activeApplication));
+            reset->onClicked=[this]{
+                std::string error;
+                if(!m_preferences.forgetChoice(m_activeApplication,error)){message("Preferences",error);return;}
+                m_sourceChoices.erase(m_activeApplication);
+                m_app.loop().post([this]{details(preferredVariant(m_variants,m_preferences));});
             };
         } else label(panel,sourceName(item),13,550,true);
         if(item["catalog"].toBool()) {
@@ -1137,6 +1219,7 @@ private:
         });
     }
     ui::Application& m_app;
+    Preferences m_preferences;
     bool m_preview=false,m_busy=false,m_mutating=false;
     std::string m_mode="search",m_page="discover",m_buffer,m_displayName,m_author,m_brandIcon,m_distribution,m_projectUrl,m_reviewedFile;
     std::string m_browseTitle,m_browseQuery;
