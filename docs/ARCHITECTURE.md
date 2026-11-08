@@ -167,7 +167,9 @@ set the application's position. The native card displays the common title and
 providers, while its dropdown shows the exact source and installation status.
 Duplicate labels include package/ref architecture to disambiguate choices.
 
-Selection is remembered per application for the session. Changing source
+Selection is remembered per application, with optional persistence across sessions
+and a configurable format order in Settings. [Preference storage](PREFERENCES.md)
+describes selection precedence and the shared JSON format. Changing source
 cancels the old detail process and only its current generation can render.
 The source-specific publisher, version, permissions, screenshots and actions
 remain attached to that selected target. Operations use the exact installation

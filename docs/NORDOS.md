@@ -43,8 +43,10 @@ packages both own the same branding file; either generate it while building
 the NordOS store package or add a properly designed configuration override
 mechanism before shipping a separate branding package.
 
-Source enablement, custom featured selections and provider preference
-configuration are future work. The current app uses the system's existing APT sources, Flatpak
+Users can now set format preference order and remember exact per-app choices in
+Settings. See [preference storage](PREFERENCES.md). Distribution-wide preference
+defaults, source enablement and custom featured selections are future work.
+The current app uses the system's existing APT sources, Flatpak
 remotes and snapd service. It does not add repositories automatically.
 
 A downstream code fork is only needed for substantial changes that cannot be

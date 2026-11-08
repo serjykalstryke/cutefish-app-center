@@ -283,3 +283,22 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   the heading after editing the query, and returning through Back.
 - The category, source-choice, management, delayed-icon and light/dark checks
   continue to pass. The rendered featured-selection view was inspected.
+
+
+## 0.4.0 Settings and source preferences — November 8, 2026
+
+- All 147 Python checks and seven native checks pass. Native tests isolate their
+  preference files so fixture source selections cannot alter user settings.
+- The new settings check moves Snap ahead of native formats, selects a precise
+  user Flatpak choice, reconstructs App Center, and confirms that exact choice
+  remains selected. Use Default Source clears the override. Disabling remembering
+  prevents persistence, and Restore Defaults reinstates native-first selection.
+- Policy checks cover installed-source precedence, missing saved choices, format
+  normalization, private file permissions, retained unknown fields, writes from
+  two independent instances, malformed/newer documents, and write failure.
+- Light and dark settings pages were rendered and visually inspected. The
+  existing catalog/navigation, source actions, management, artwork and inventory
+  checks still pass. The Release build passes runtime linkage verification.
+- This milestone implements settings and source selection. It does not install
+  providers, edit repositories, select new channels, enable background services
+  or change system update schedules. Those remain separate milestones.
