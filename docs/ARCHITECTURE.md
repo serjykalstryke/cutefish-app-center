@@ -49,16 +49,23 @@ Open rechecks installed state. Debian launchers come only from that package's ap
 The native Menu tree is registered through Application::setMainMenu, with Application/Help menu roles. The application menu belongs to the configured display name; the status bar owns its presentation. Window controls occupy the full-height sidebar, which has a square internal boundary; detail cards retain their own corner radius.
 
 
-## Discover, navigation and the 0.2 identity migration
+## Catalog, navigation and the 0.2 identity migration
 
 The native controller tracks the selected page separately from the provider list
-mode. Discover without a query shows a full-width browsing page; searches and
+mode. App Catalog without a query shows a full-width browsing page; searches and
 category/card selections retain the results-and-details view. Installed combines
 software inventory and updates. Install from File owns file
 review and the drop target, and About owns version, author and project links.
 Global file drops and command-line files route to the same review flow.
 
-Discover loads in a separate asynchronous process and only renders while the
+Catalog is the sidebar/menu label and App Catalog is the landing-page heading.
+Category navigation retains its display name separately from the provider query,
+so source filtering and Reload preserve the section heading. Editing the query
+clears that context. Results expose Back to App Catalog (also View/Alt+Left),
+which stops a pending search debounce, clears query/source/category state, and
+resets details before returning to the landing page.
+
+The catalog loads in a separate asynchronous process and only renders while the
 home page is still selected. A per-session cache avoids repeating that work on
 navigation; Reload and mutations invalidate it. Its manual carousel is a small
 editorial selection joined to exact advertised stable Flatpak refs or actual

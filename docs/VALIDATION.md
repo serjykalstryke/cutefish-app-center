@@ -258,3 +258,17 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
 - The system-compiler Release build passes runtime linkage verification. The
   0.3.4 Debian package contains the tested executable and unchanged backend.
   APT's preview selects one App Center upgrade with no removals or dependencies.
+
+
+## 0.3.5 Catalog sections and return navigation — November 8, 2026
+
+- All 147 automated checks and six native checks pass. The expanded home check
+  verifies Catalog/App Catalog naming, Internet and Audio & Video section
+  headings, preservation through source changes and Reload, and conversion
+  to Search Results when the query changes.
+- Featured-app and typed searches expose Back, which clears query/source state
+  and restores the featured/category page. Alt+Left exercises the same action.
+  Returning while a debounce is pending stays on App Catalog after the timer
+  would have fired. Existing file review and light/dark icon checks still pass.
+- The Release build and Debian package pass runtime linkage checks. A rendered
+  category screenshot was inspected with the new heading and Back control.
