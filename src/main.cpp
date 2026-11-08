@@ -52,7 +52,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.3.5"
+#define APP_CENTER_VERSION "0.3.6"
 #endif
 
 static J branding() {
@@ -520,7 +520,7 @@ private:
     }
     void navigate(const std::string& page) {
         if(m_busy)return;
-        m_debounce.stop();m_categoryName.clear();m_categoryQuery.clear();
+        m_debounce.stop();m_browseTitle.clear();m_browseQuery.clear();
         cancelDetails();m_userSelected=false;if(page!="installed")cancelUpdateCheck();m_page=page;m_mode=page=="installed"?"installed":"search";
         m_search->setText("");m_source->setCurrentIndex(0);m_reviewedFile.clear();refresh();
     }
@@ -545,11 +545,11 @@ private:
         updateNavigation();
         const bool catalogPage=m_page=="discover" || m_page=="installed";
         const bool results=m_page=="discover" && m_search->text().size()>=2;
-        if(m_search->text()!=m_categoryQuery){m_categoryName.clear();m_categoryQuery.clear();}
+        if(m_search->text()!=m_browseQuery){m_browseTitle.clear();m_browseQuery.clear();}
         m_back->setVisible(results);
         m_controls->setVisible(catalogPage);m_metadataControls->setVisible(false);m_managementControls->setVisible(m_page=="installed");
         m_reload->setText(m_page=="installed"?"Check for Updates":"Reload");
-        m_title->setText(m_page=="files"?"Install from File":m_page=="about"?"About":m_page=="installed"?"Installed":results?(m_categoryName.empty()?"Search Results":m_categoryName):"App Catalog");
+        m_title->setText(m_page=="files"?"Install from File":m_page=="about"?"About":m_page=="installed"?"Installed":results?(m_browseTitle.empty()?"Search Results":m_browseTitle):"App Catalog");
         m_subtitle->setVisible(m_page!="about" && !(m_page=="discover" && m_search->text().size()<2));
         if(m_page=="files"){m_subtitle->setText("Review a .deb or AppImage before installing.");filePage();return;}
         if(m_page=="about"){aboutPage();return;}
@@ -692,9 +692,9 @@ private:
         },true,[this](const J& event){m_updateOperation->update(event);},
         [this](const std::string& error,bool reported){m_updateOperation->fail(error,reported);});
     }
-    void searchFor(const std::string& query,const std::string& categoryName={}) {
+    void searchFor(const std::string& query,const std::string& displayTitle={}) {
         if(m_busy)return;
-        m_categoryName=categoryName;m_categoryQuery=categoryName.empty()?"":query;
+        m_browseTitle=displayTitle;m_browseQuery=displayTitle.empty()?"":query;
         m_page="discover";m_mode="search";m_search->setText(query);m_source->setCurrentIndex(0);refresh();
     }
     void cancelDiscover() {
@@ -738,8 +738,8 @@ private:
             auto* cards=content->addChild<ui::Row>();cards->setSpacing(14);size(cards,-1,204,true);
             const size_t start=m_featuredPage*3;
             for(size_t i=start;i<std::min(start+3,m_featured.size());i++){
-                auto* card=cards->addChild<FeaturedCard>(m_featured[i]);const auto query=str(m_featured[i],"query");
-                card->onClicked=[this,query]{m_app.loop().post([this,query]{searchFor(query);});};
+                auto* card=cards->addChild<FeaturedCard>(m_featured[i]);const auto query=str(m_featured[i],"query"),title=str(m_featured[i],"feature_name");
+                card->onClicked=[this,query,title]{m_app.loop().post([this,query,title]{searchFor(query,title);});};
             }
         } else {
             auto* empty=content->addChild<Panel>();size(empty,-1,150,true);
@@ -1139,7 +1139,7 @@ private:
     ui::Application& m_app;
     bool m_preview=false,m_busy=false,m_mutating=false;
     std::string m_mode="search",m_page="discover",m_buffer,m_displayName,m_author,m_brandIcon,m_distribution,m_projectUrl,m_reviewedFile;
-    std::string m_categoryName,m_categoryQuery;
+    std::string m_browseTitle,m_browseQuery;
     J::Array m_libraryItems,m_libraryWarnings,m_updateItems,m_updateWarnings;
     bool m_libraryLoaded=false,m_updatesLoaded=false,m_updatesComplete=false,m_libraryRenderPending=false,m_restartRequired=false,m_userSelected=false;
     size_t m_updateCount=0;unsigned long m_updateGeneration=0;
