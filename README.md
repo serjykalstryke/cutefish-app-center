@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.3.3_amd64.deb
-sudo apt install ./cutefish-app-center_0.3.3_amd64.deb
+    --output cutefish-app-center_0.3.4_amd64.deb
+sudo apt install ./cutefish-app-center_0.3.4_amd64.deb
 cutefish-app-center
 ```
 
@@ -208,6 +208,11 @@ Cutefish’s top bar exposes the application-name menu plus **File**, **View**,
 Ctrl+R and Ctrl+Q (the desktop’s Command key also maps to Ctrl). The sidebar
 continues to the top of the window with a square internal edge.
 
+Navigation, category and file-import symbols follow the live Cutefish light/dark
+text palette. Category artwork ships with the app, so it does not depend on
+which icons the system theme provides. Application logos retain their original
+colors.
+
 Search ranks exact app names and identifiers first, followed by app categories,
 names, keywords and summaries. Queries such as **web browsers**, **image editors**,
 **text editors** and **media players** recognize their category and common aliases.
@@ -297,7 +302,9 @@ Installed and All software lists without applying updates.
 The icons smoke test covers delayed artwork, navigation while an icon request
 is pending, small request batches and loading further rows on scroll. Its
 `--snap` and `--appimage` modes render actual read-only catalog searches.
-The home smoke test covers carousel navigation, category search, About credit
+The home smoke test checks rendered navigation, category and file-import icons
+while switching a live view between light and dark themes. It also covers
+carousel navigation, category search, About credit
 and file-drop review using a private provider. `./build/cutefish-app-center-home-smoke --live` renders all three pages with
 the system catalog. The details smoke test uses a private provider fixture and never launches an
 application or changes packages. `./build/cutefish-app-center-details-smoke --live`

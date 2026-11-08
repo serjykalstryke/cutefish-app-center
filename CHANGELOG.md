@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4 — 2026-11-08
+
+- Render sidebar, category and local-file interface icons with the live Cutefish text palette for light and dark appearances.
+- Supply consistent symbolic category artwork, independent of installed icon-theme coverage, while retaining original application logos.
+- Add native rendering checks that switch the same view between light and dark themes and verify every interface glyph.
+
 ## 0.3.3 — 2026-11-06
 
 - List Debian updates only when the offered version is newer than the installed package for that architecture.
