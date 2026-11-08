@@ -26,6 +26,7 @@
 #include <ui/file_drop_area.h>
 #include <ui/icon_image.h>
 #include <ui/image_view.h>
+#include <ui/keys.h>
 #include <ui/label.h>
 #include <ui/layout.h>
 #include <ui/menu.h>
@@ -51,7 +52,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.3.4"
+#define APP_CENTER_VERSION "0.3.5"
 #endif
 
 static J branding() {
@@ -356,7 +357,7 @@ public:
         auto* mark=brandRow->addChild<ui::IconImage>(brand["icon"].toString("org.cutefish.AppCenter"),36);size(mark,36,36);
         label(brandRow,brand["sidebar_name"].toString("App Center"),16,650,true);
         size(sidebar->addChild<ui::View>(),-1,8);
-        for(const auto& entry:std::vector<std::vector<std::string>>{{"Discover","discover","grid"},{"Installed","installed","list"},{"Install from File","files","folder"}}){
+        for(const auto& entry:std::vector<std::vector<std::string>>{{"Catalog","discover","grid"},{"Installed","installed","list"},{"Install from File","files","folder"}}){
             auto* button=sidebar->addChild<NavigationItem>(entry[0],entry[2]);
             button->onClicked=[this,page=entry[1]]{navigate(page);};m_nav.push_back(button);m_navPages.push_back(entry[1]);
         }
@@ -367,7 +368,10 @@ public:
         auto* header=main->addChild<ui::WindowHeader>(38);size(header,-1,38,true);
         header->setCloseVisible(false);header->setMinimizeVisible(false);header->setMaximizeVisible(false);
 
-        m_title=label(main,"Discover",28,700);
+        auto* titleLine=main->addChild<ui::Row>();titleLine->setSpacing(12);size(titleLine,-1,-1,true);
+        m_back=titleLine->addChild<ui::Button>("← Back");size(m_back,86,34);
+        m_back->setToolTip("Back to App Catalog");m_back->onClicked=[this]{backToCatalog();};
+        m_title=label(titleLine,"App Catalog",28,700);
         m_subtitle=label(main,"Find apps across your configured software sources.",13);
         m_subtitle->setColor(ui::ColorId::DisabledText);
         auto* controls=main->addChild<ui::Row>();m_controls=controls; controls->setSpacing(12); size(controls,-1,38,true);
@@ -423,6 +427,7 @@ private:
         m_bar->setVisible(value); m_bar->setIndeterminate(value);
         for(auto* b:m_nav) b->setEnabled(!value);
         m_search->setEnabled(!value);m_source->setEnabled(!value);m_reload->setEnabled(!value);
+        m_back->setEnabled(!value);
         m_refresh->setEnabled(!value);m_flatpakRefresh->setEnabled(!value);
         if(value)m_footer->setVisible(true);
         m_softwareView->setEnabled(!value);m_updateFilter->setEnabled(!value);
@@ -515,8 +520,12 @@ private:
     }
     void navigate(const std::string& page) {
         if(m_busy)return;
+        m_debounce.stop();m_categoryName.clear();m_categoryQuery.clear();
         cancelDetails();m_userSelected=false;if(page!="installed")cancelUpdateCheck();m_page=page;m_mode=page=="installed"?"installed":"search";
         m_search->setText("");m_source->setCurrentIndex(0);m_reviewedFile.clear();refresh();
+    }
+    void backToCatalog() {
+        if(!m_busy && m_back->isVisible())navigate("discover");
     }
     void updateNavigation() {
         for(size_t i=0;i<m_nav.size();i++)m_nav[i]->setSelected(m_navPages[i]==m_page);
@@ -535,9 +544,12 @@ private:
         if(m_busy)return;
         updateNavigation();
         const bool catalogPage=m_page=="discover" || m_page=="installed";
+        const bool results=m_page=="discover" && m_search->text().size()>=2;
+        if(m_search->text()!=m_categoryQuery){m_categoryName.clear();m_categoryQuery.clear();}
+        m_back->setVisible(results);
         m_controls->setVisible(catalogPage);m_metadataControls->setVisible(false);m_managementControls->setVisible(m_page=="installed");
         m_reload->setText(m_page=="installed"?"Check for Updates":"Reload");
-        m_title->setText(m_page=="files"?"Install from File":m_page=="about"?"About":m_page=="installed"?"Installed":"Discover");
+        m_title->setText(m_page=="files"?"Install from File":m_page=="about"?"About":m_page=="installed"?"Installed":results?(m_categoryName.empty()?"Search Results":m_categoryName):"App Catalog");
         m_subtitle->setVisible(m_page!="about" && !(m_page=="discover" && m_search->text().size()<2));
         if(m_page=="files"){m_subtitle->setText("Review a .deb or AppImage before installing.");filePage();return;}
         if(m_page=="about"){aboutPage();return;}
@@ -680,8 +692,9 @@ private:
         },true,[this](const J& event){m_updateOperation->update(event);},
         [this](const std::string& error,bool reported){m_updateOperation->fail(error,reported);});
     }
-    void searchFor(const std::string& query) {
+    void searchFor(const std::string& query,const std::string& categoryName={}) {
         if(m_busy)return;
+        m_categoryName=categoryName;m_categoryQuery=categoryName.empty()?"":query;
         m_page="discover";m_mode="search";m_search->setText(query);m_source->setCurrentIndex(0);refresh();
     }
     void cancelDiscover() {
@@ -744,8 +757,8 @@ private:
             {"Games","Puzzles, strategy and more","app-center-games","games"},
             {"Education","Learning and reference","app-center-education","education"},
             {"Utilities","Useful everyday tools","app-center-utilities","utilities"}}){
-            auto* tile=categories->addChild<CategoryTile>(category[0],category[1],category[2]);auto query=category[3];
-            tile->onClicked=[this,query]{m_app.loop().post([this,query]{searchFor(query);});};
+            auto* tile=categories->addChild<CategoryTile>(category[0],category[1],category[2]);auto query=category[3],name=category[0];
+            tile->onClicked=[this,query,name]{m_app.loop().post([this,query,name]{searchFor(query,name);});};
         }
     }
     void filePage() {
@@ -935,7 +948,10 @@ private:
         });
         file->onAboutToShow=[this,file,open,launch]{file->setItemEnabled(open,!m_busy && !m_preview);file->setItemEnabled(launch,!m_busy && !m_preview && m_selectedVariant<m_variants.size() && m_variants[m_selectedVariant]["can_open"].toBool());};
         auto* view=m_mainMenu->addSubmenu("View");
-        for(const auto& entry:std::vector<std::pair<std::string,std::string>>{{"Discover","discover"},{"Installed","installed"},{"Install from File","files"}}){view->addItem(entry.first,[this,page=entry.second]{navigate(page);});}
+        for(const auto& entry:std::vector<std::pair<std::string,std::string>>{{"Catalog","discover"},{"Installed","installed"},{"Install from File","files"}}){view->addItem(entry.first,[this,page=entry.second]{navigate(page);});}
+        auto back=view->addItem("Back to App Catalog",[this]{backToCatalog();});view->setItemKeyEquivalent(back,"Left",ui::AltModifier);
+        m_window.addShortcut(ui::AltModifier,ui::key::Left,[this]{backToCatalog();});
+        view->onAboutToShow=[this,view,back]{view->setItemEnabled(back,!m_busy && m_back->isVisible());};
         view->addSeparator();
         auto search=[this]{if(m_busy)return;if(m_page=="files" || m_page=="about")navigate("discover");m_search->setFocus();};
         auto find=view->addItem("Search",search);view->setItemKeyEquivalent(find,"f",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'f',search);
@@ -1123,6 +1139,7 @@ private:
     ui::Application& m_app;
     bool m_preview=false,m_busy=false,m_mutating=false;
     std::string m_mode="search",m_page="discover",m_buffer,m_displayName,m_author,m_brandIcon,m_distribution,m_projectUrl,m_reviewedFile;
+    std::string m_categoryName,m_categoryQuery;
     J::Array m_libraryItems,m_libraryWarnings,m_updateItems,m_updateWarnings;
     bool m_libraryLoaded=false,m_updatesLoaded=false,m_updatesComplete=false,m_libraryRenderPending=false,m_restartRequired=false,m_userSelected=false;
     size_t m_updateCount=0;unsigned long m_updateGeneration=0;
@@ -1141,7 +1158,7 @@ private:
     ui::Label *m_title,*m_subtitle,*m_status,*m_warnings;
     ui::SearchField* m_search;
     ui::ComboBox* m_source;
-    ui::Button *m_reload,*m_refresh,*m_flatpakRefresh;
+    ui::Button *m_back,*m_reload,*m_refresh,*m_flatpakRefresh;
     ui::Row *m_controls,*m_footer,*m_metadataControls;
     DropPanel* m_dropZone=nullptr;
     ui::ProgressBar* m_bar;
