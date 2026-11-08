@@ -15,6 +15,8 @@ records += [dict(base,source='deb',id='example-browser',app_id='org.example.Brow
             dict(base,source='snap',id='example-browser',scope='system',channel='stable',installed=True),
             dict(base,source='appimage',id='a'*64,name='Example_Browser',scope='catalog',catalog=True),
             dict(base,source='flatpak',id='org.example.Other',scope='system',remote='flathub',branch='stable',arch='x86_64',name='Other App')]
+if os.environ.get('APP_CENTER_SETTINGS_FIXTURE'):
+    for item in records:item['installed']=False
 if r['op']=='discover':result=dict(items=[],warnings=[])
 elif r['op']=='list':
     items,total=b.group_search_results(records);result=dict(items=items,warnings=[],total=total)

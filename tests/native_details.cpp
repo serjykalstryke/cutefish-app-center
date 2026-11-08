@@ -1,6 +1,7 @@
 #define main cutefish_app_center_program_main
 #include "../src/main.cpp"
 #undef main
+#include "preferences_fixture.h"
 #include <cassert>
 #include <ui/test_input.h>
 #include <ui/keys.h>
@@ -22,6 +23,7 @@ static void click(ui::Window& window,ui::View* view) {
     window.grab();auto point=view->mapToWindow({view->geometry().width/2,view->geometry().height/2});ui::TestInput::click(window,point);
 }
 int main(int argc,char** argv) {
+    isolatePreferences("native_details");
     bool live=argc>1 && std::string(argv[1])=="--live";
     if(live)std::filesystem::create_directories("outputs");
     std::filesystem::create_directories("work/details-fixture");

@@ -1,6 +1,7 @@
 #define main cutefish_app_center_program_main
 #include "../src/main.cpp"
 #undef main
+#include "preferences_fixture.h"
 #include <cassert>
 #include <ui/test_input.h>
 #include <ui/keys.h>
@@ -24,6 +25,7 @@ static void click(ui::Window& w,ui::View* v) {
     assert(v);auto point=v->mapToWindow({v->geometry().width/2,v->geometry().height/2});ui::TestInput::click(w,point);
 }
 int main(int argc,char** argv) {
+    isolatePreferences("native_smoke");
     ui::Application app(argc,argv,ui::Application::Platform::Headless);
     AppCenter store(app,false);store.show();auto& w=store.window();
     w.grab();assert(app.mainMenu());assert(app.mainMenu()->submenu(0)->role()==ui::MenuRole::Application);

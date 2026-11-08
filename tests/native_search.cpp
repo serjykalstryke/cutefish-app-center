@@ -1,6 +1,7 @@
 #define main cutefish_app_center_program_main
 #include "../src/main.cpp"
 #undef main
+#include "preferences_fixture.h"
 #include <cassert>
 #include <ui/test_input.h>
 
@@ -14,6 +15,7 @@ static void click(ui::Window& w,ui::View* v){assert(v);w.grab();ui::TestInput::c
 static ui::ComboBox* choices(ui::View* root){return find<ui::ComboBox>(root,[](auto* c){return c->items().size()==5 && c->items()[0].starts_with("Snap");});}
 static void choose(ui::View* root,int n){auto* c=choices(root);assert(c);c->setCurrentIndex(n);c->onActivated(n);}
 int main(int argc,char** argv){
+    isolatePreferences("native_search");
  const bool live=argc>1 && std::string(argv[1])=="--live";
  const auto fixture=std::filesystem::absolute("work/search-fixture");std::filesystem::create_directories(fixture);std::filesystem::create_directories("outputs");
  if(!live){auto backend=(std::filesystem::path(__FILE__).parent_path()/"search_fixture.py").string();setenv("CUTEFISH_APP_CENTER_BACKEND",backend.c_str(),1);setenv("APP_CENTER_SEARCH_FIXTURE_DIR",fixture.c_str(),1);for(auto file:{"launch.json","plan.json"})std::filesystem::remove(fixture/file);}

@@ -1,6 +1,7 @@
 #define main cutefish_app_center_program_main
 #include "../src/main.cpp"
 #undef main
+#include "preferences_fixture.h"
 #include <cassert>
 #include <ui/test_input.h>
 
@@ -13,6 +14,7 @@ static ui::Label* text(ui::View* root,const std::string& value){return findView<
 static void click(ui::Window& window,ui::View* view){assert(view);window.grab();ui::TestInput::click(window,view->mapToWindow({view->geometry().width/2,view->geometry().height/2}));}
 static bool loaded(AppRow* row){return row && findView<ui::IconImage>(row,[](auto* image){return std::filesystem::path(image->name()).is_absolute();});}
 int main(int argc,char** argv){
+    isolatePreferences("native_icons");
     const std::string mode=argc>1?argv[1]:"";const bool live=mode=="--snap" || mode=="--appimage";
     auto fixture=std::filesystem::absolute("work/icons-fixture");std::filesystem::create_directories(fixture);std::filesystem::create_directories("outputs");
     if(!live){

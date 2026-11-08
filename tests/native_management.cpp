@@ -1,6 +1,7 @@
 #define main cutefish_app_center_program_main
 #include "../src/main.cpp"
 #undef main
+#include "preferences_fixture.h"
 #include <cassert>
 #include <ui/test_input.h>
 
@@ -19,6 +20,7 @@ static ui::ComboBox* combo(ui::View* root,const std::string& first){return findV
 static void choose(ui::ComboBox* c,int n){assert(c);c->setCurrentIndex(n);c->onActivated(n);}
 static AppRow* row(ui::View* root,const std::string& name){return findView<AppRow>(root,[&](auto* r){return text(r,name);});}
 int main(int argc,char** argv){
+    isolatePreferences("native_management");
  bool live=argc>1 && std::string(argv[1])=="--live";
  auto fixture=std::filesystem::absolute("work/management-fixture");std::filesystem::create_directories(fixture);std::filesystem::create_directories("outputs");
  if(!live){auto provider=(std::filesystem::path(__FILE__).parent_path()/"management_fixture.py").string();setenv("CUTEFISH_APP_CENTER_BACKEND",provider.c_str(),1);setenv("APP_CENTER_MANAGEMENT_FIXTURE_DIR",fixture.c_str(),1);for(auto f:{"updated","apply.json","fail-source","partial"})std::filesystem::remove(fixture/f);}
