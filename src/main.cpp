@@ -37,6 +37,7 @@
 #include <ui/theme.h>
 #include <ui/window.h>
 #include <ui/window_header.h>
+#include "interface_icons.h"
 
 namespace ui = cutefish::ui;
 namespace base = cutefish::base;
@@ -50,7 +51,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.3.3"
+#define APP_CENTER_VERSION "0.3.4"
 #endif
 
 static J branding() {
@@ -251,7 +252,7 @@ class NavigationItem : public ui::Button {
 public:
     NavigationItem(const std::string& text,const std::string& icon):ui::Button(""){
         m_content=addChild<ui::Row>();m_content->setSpacing(10);m_content->setMargins({12,9,12,9});
-        auto* glyph=m_content->addChild<ui::IconImage>(icon,20);glyph->setFallbackName("applications-other");size(glyph,20,20);
+        auto* glyph=m_content->addChild<ui::Icon>(icon,20);size(glyph,20,20);
         label(m_content,text,13,500);size(this,-1,42,true);
     }
     void setSelected(bool selected){m_selected=selected;requestPaint();}
@@ -270,7 +271,7 @@ class CategoryTile : public ui::Button {
 public:
     CategoryTile(const std::string& name,const std::string& description,const std::string& icon):ui::Button(""){
         m_content=addChild<ui::Row>();m_content->setMargins({16,15,16,15});m_content->setSpacing(12);
-        auto* glyph=m_content->addChild<ui::IconImage>(icon,32);glyph->setFallbackName("applications-other");size(glyph,32,32);
+        auto* glyph=m_content->addChild<ui::Icon>(icon,32);size(glyph,32,32);
         auto* text=m_content->addChild<ui::Column>();text->setSpacing(4);size(text,-1,-1,true);
         label(text,name,14,600);auto* descriptionLabel=label(text,description,11,400,true);descriptionLabel->setColor(ui::ColorId::DisabledText);descriptionLabel->setMaximumLineCount(2);
         size(this,-1,86,true);
@@ -326,6 +327,7 @@ private:bool m_active=false;
 class AppCenter {
 public:
     AppCenter(ui::Application& app, bool preview): m_app(app), m_preview(preview), m_debounce(&app.loop()), m_iconDebounce(&app.loop()) {
+        registerInterfaceIcons();
         auto brand=branding();
         const auto displayName=brand["display_name"].toString("Cutefish App Center");
         m_displayName=displayName;
@@ -354,12 +356,12 @@ public:
         auto* mark=brandRow->addChild<ui::IconImage>(brand["icon"].toString("org.cutefish.AppCenter"),36);size(mark,36,36);
         label(brandRow,brand["sidebar_name"].toString("App Center"),16,650,true);
         size(sidebar->addChild<ui::View>(),-1,8);
-        for(const auto& entry:std::vector<std::vector<std::string>>{{"Discover","discover","view-grid"},{"Installed","installed","applications-other"},{"Install from File","files","document-open"}}){
+        for(const auto& entry:std::vector<std::vector<std::string>>{{"Discover","discover","grid"},{"Installed","installed","list"},{"Install from File","files","folder"}}){
             auto* button=sidebar->addChild<NavigationItem>(entry[0],entry[2]);
             button->onClicked=[this,page=entry[1]]{navigate(page);};m_nav.push_back(button);m_navPages.push_back(entry[1]);
         }
         sidebar->addStretch();
-        auto* about=sidebar->addChild<NavigationItem>("About","help-about");about->onClicked=[this]{navigate("about");};m_nav.push_back(about);m_navPages.push_back("about");
+        auto* about=sidebar->addChild<NavigationItem>("About","info");about->onClicked=[this]{navigate("about");};m_nav.push_back(about);m_navPages.push_back("about");
         auto* main=body->addChild<ui::Column>(); size(main,-1,-1,true,true);
         main->setMargins({26,0,26,18}); main->setSpacing(14);
         auto* header=main->addChild<ui::WindowHeader>(38);size(header,-1,38,true);
@@ -734,14 +736,14 @@ private:
         label(content,"Explore categories",19,650);
         auto* categories=content->addChild<ui::Grid>(3);categories->setColumnSpacing(12);categories->setRowSpacing(12);size(categories,-1,-1,true);
         for(const auto& category:std::vector<std::vector<std::string>>{
-            {"Internet","Browsers, mail and chat","applications-internet","internet"},
-            {"Graphics","Images, illustration and design","applications-graphics","graphics"},
-            {"Office","Documents and productivity","applications-office","office"},
-            {"Audio & Video","Music, players and editing","applications-multimedia","audio video"},
-            {"Development","Editors and developer tools","applications-development","development"},
-            {"Games","Puzzles, strategy and more","applications-games","games"},
-            {"Education","Learning and reference","applications-education","education"},
-            {"Utilities","Useful everyday tools","applications-utilities","utilities"}}){
+            {"Internet","Browsers, mail and chat","app-center-internet","internet"},
+            {"Graphics","Images, illustration and design","app-center-graphics","graphics"},
+            {"Office","Documents and productivity","app-center-office","office"},
+            {"Audio & Video","Music, players and editing","app-center-media","audio video"},
+            {"Development","Editors and developer tools","app-center-development","development"},
+            {"Games","Puzzles, strategy and more","app-center-games","games"},
+            {"Education","Learning and reference","app-center-education","education"},
+            {"Utilities","Useful everyday tools","app-center-utilities","utilities"}}){
             auto* tile=categories->addChild<CategoryTile>(category[0],category[1],category[2]);auto query=category[3];
             tile->onClicked=[this,query]{m_app.loop().post([this,query]{searchFor(query);});};
         }
@@ -750,7 +752,7 @@ private:
         resetPage();
         auto* content=m_list->setContent<ui::Column>();content->setSpacing(18);content->setMargins({0,12,0,18});
         m_dropZone=content->addChild<DropPanel>();m_dropZone->setSpacing(16);m_dropZone->setMargins(ui::Margins::all(30));size(m_dropZone,-1,310,true);
-        auto* icon=m_dropZone->addChild<ui::IconImage>("document-open",56);size(icon,56,56);
+        auto* icon=m_dropZone->addChild<ui::Icon>("folder",56);size(icon,56,56);
         label(m_dropZone,"Drop a package here",23,650,true);
         label(m_dropZone,"Debian packages (.deb) and AppImages",13,400,true);
         auto* row=m_dropZone->addChild<ui::Row>();size(row,-1,-1,true);
