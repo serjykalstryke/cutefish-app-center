@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.3.5_amd64.deb
-sudo apt install ./cutefish-app-center_0.3.5_amd64.deb
+    --output cutefish-app-center_0.3.6_amd64.deb
+sudo apt install ./cutefish-app-center_0.3.6_amd64.deb
 cutefish-app-center
 ```
 
@@ -140,8 +140,9 @@ normal system installation.
 - **Catalog:** browse a featured-app carousel and application categories, or
   search configured Debian, Flatpak, Snap and AppImage sources. Selecting a card
   opens the existing search-and-details view so you can compare software sources.
-  The main page is titled **App Catalog**. Opening a category uses its name as
-  the heading, while a new text search shows **Search Results**. **Back** beside
+  The main page is titled **App Catalog**. Opening a category or featured app
+  uses its display name as the heading, while a new text search shows
+  **Search Results**. Source changes and Reload preserve the selected heading. **Back** beside
   the heading returns to App Catalog and clears the query and source filter.
   The same action is available in the View menu and through Alt+Left.
 - **Installed:** manage installed apps and updates together. Applications appear

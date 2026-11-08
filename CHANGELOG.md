@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.6 — 2026-11-08
+
+- Keep the featured app’s display name as the page heading when opening a recommendation, including after source changes and Reload.
+- Return to Search Results when the query changes and preserve Back to App Catalog.
+
 ## 0.3.5 — 2026-11-08
 
 - Rename the sidebar and View menu entry to Catalog and the landing heading to App Catalog.
