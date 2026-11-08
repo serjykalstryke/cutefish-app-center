@@ -272,3 +272,14 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   would have fired. Existing file review and light/dark icon checks still pass.
 - The Release build and Debian package pass runtime linkage checks. A rendered
   category screenshot was inspected with the new heading and Back control.
+
+
+## 0.3.6 Featured-app headings — November 8, 2026
+
+- All 147 automated checks and six native checks pass. Featured navigation now
+  carries the recommendation's display name separately from its search query.
+- The home fixture deliberately uses different featured, query and result
+  names. It verifies the featured heading, source changes, Reload, clearing
+  the heading after editing the query, and returning through Back.
+- The category, source-choice, management, delayed-icon and light/dark checks
+  continue to pass. The rendered featured-selection view was inspected.

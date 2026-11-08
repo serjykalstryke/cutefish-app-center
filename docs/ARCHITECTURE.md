@@ -59,10 +59,11 @@ review and the drop target, and About owns version, author and project links.
 Global file drops and command-line files route to the same review flow.
 
 Catalog is the sidebar/menu label and App Catalog is the landing-page heading.
-Category navigation retains its display name separately from the provider query,
+Category and featured-app navigation retain their display names separately from
+the provider query,
 so source filtering and Reload preserve the section heading. Editing the query
 clears that context. Results expose Back to App Catalog (also View/Alt+Left),
-which stops a pending search debounce, clears query/source/category state, and
+which stops a pending search debounce, clears query/source/browsing state, and
 resets details before returning to the landing page.
 
 The catalog loads in a separate asynchronous process and only renders while the
