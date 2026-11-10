@@ -9,6 +9,9 @@ XML='''<node><interface name="org.freedesktop.PackageKit">
 TX='''<node><interface name="org.freedesktop.PackageKit.Transaction">
 <method name="SetHints"><arg type="as" direction="in"/></method>
 <method name="Resolve"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
+<method name="GetRepoList"><arg type="t" direction="in"/></method>
+<method name="RepoEnable"><arg type="s" direction="in"/><arg type="b" direction="in"/></method>
+<signal name="RepoDetail"><arg type="s"/><arg type="s"/><arg type="b"/></signal>
 <method name="GetUpdates"><arg type="t" direction="in"/></method>
 <method name="UpdatePackages"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
 <method name="InstallPackages"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
@@ -21,9 +24,10 @@ TX='''<node><interface name="org.freedesktop.PackageKit.Transaction">
 </interface></node>'''
 bus=Gio.bus_get_sync(Gio.BusType.SESSION,None)
 count=0
+repo_enabled=True
 loop=GLib.MainLoop()
 def method(conn,sender,path,iface,method,args,invocation):
- global count
+ global count,repo_enabled
  if method=='CreateTransaction':
   count+=1;path=ROOT+'/t'+str(count)
   bus.register_object(path,Gio.DBusNodeInfo.new_for_xml(TX).interfaces[0],globals()['method'],None,None)
@@ -49,6 +53,14 @@ def method(conn,sender,path,iface,method,args,invocation):
     for pid in ids:
      if flags & 4:bus.emit_signal(sender,path,IFACE,'Package',GLib.Variant('(uss)',(11,pid,'A simulated update')))
     if not flags & 4:bus.emit_signal(sender,path,IFACE,'RequireRestart',GLib.Variant('(us)',(2,ids[0])))
+   elif method=='GetRepoList':
+    bus.emit_signal(sender,path,IFACE,'RepoDetail',GLib.Variant('(ssb)',('fixture-repo:exact-id','A Debian repository',repo_enabled)))
+   elif method=='RepoEnable':
+    repo,enabled=args.unpack()
+    if repo=='fixture-repo:exact-id':
+     globals()['repo_enabled']=enabled
+    else:
+     bus.emit_signal(sender,path,IFACE,'ErrorCode',GLib.Variant('(us)',(1,'Unknown repository')))
    elif method=='GetUpdates':
     bus.emit_signal(sender,path,IFACE,'ErrorCode',GLib.Variant('(us)',(1,'Fixture error')))
    else:

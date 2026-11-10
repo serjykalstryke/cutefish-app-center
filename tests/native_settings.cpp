@@ -13,7 +13,7 @@ template<class T> static T* find(ui::View* root,std::function<bool(T*)> match){
 }
 static ui::Label* text(ui::View* root,const std::string& value){return find<ui::Label>(root,[&](auto* l){return l->text()==value;});}
 static void click(ui::Window& window,ui::View* view){
-    assert(view);for(auto* parent=view->parent();parent;parent=parent->parent())if(auto* scroll=dynamic_cast<ui::ScrollView*>(parent)){
+    assert(view);window.grab();for(auto* parent=view->parent();parent;parent=parent->parent())if(auto* scroll=dynamic_cast<ui::ScrollView*>(parent)){
         auto point=view->mapToWindow({0,0}),origin=scroll->contentView()->mapToWindow({0,0});
         scroll->ensureVisible({point.x-origin.x,point.y-origin.y,view->geometry().width,view->geometry().height});
     }

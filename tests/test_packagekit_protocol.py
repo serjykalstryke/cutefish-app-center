@@ -33,6 +33,13 @@ class ProtocolTest(unittest.TestCase):
   _,restarts=pk.transaction('UpdatePackages','(tas)',(2,ids),report=lambda text,pct,phase:events.append((phase,pct)))
   self.assertEqual(restarts,[2])
   self.assertEqual(events,[('authorization',None),('downloading',45),('applying',None)])
+ def test_repository_read_toggle_and_verification_over_real_dbus(self):
+  rows=b.debian_sources();self.assertEqual(rows,[dict(id='fixture-repo:exact-id',name='A Debian repository',enabled=True)])
+  approved=b.plan_source(dict(source='deb',id=rows[0]['id']),'disable');b.apply_source(approved)
+  self.assertFalse(b.debian_sources()[0]['enabled'])
+  with self.assertRaisesRegex(b.AppCenterError,'already'):b.apply_source(approved)
+  b.apply_source(b.plan_source(dict(source='deb',id=rows[0]['id']),'enable'))
+  self.assertTrue(b.debian_sources()[0]['enabled'])
  def test_errors_reach_the_caller(self):
   with self.assertRaisesRegex(b.AppCenterError,'Fixture error'):b.PackageKit().transaction('GetUpdates','(t)',(0,))
 

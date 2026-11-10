@@ -177,13 +177,15 @@ class BackendTests(unittest.TestCase):
         def api(path,body=None):
             calls.append((path,body))
             if body:return {'type':'sync'}
-            return {'result':[{'confinement':'classic'}]}
+            if path.startswith('/v2/snaps/'):return {'result':{'channel':'stable','revision':'1'}}
+            return {'result':[{'confinement':'classic','channels':{'latest/stable':{'revision':'1','version':'1','confinement':'classic'}}}]}
         with patch.object(b,'snap_api',side_effect=api):
             approved=b.plan({'source':'snap','id':'test','name':'Test'},'install')
             self.assertIn('Classic confinement',approved['note'])
             b.apply(approved)
-        self.assertTrue(calls[-1][1]['classic'])
-        self.assertEqual(calls[-1][1]['channel'],'stable')
+        body=next(body for _,body in calls if body)
+        self.assertTrue(body['classic'])
+        self.assertEqual(body['channel'],'latest/stable')
     def test_no_automatic_appimage_updater(self):
         with self.assertRaisesRegex(b.AppCenterError,'publisher'):
             b.plan({'source':'appimage','id':'a'*64},'update')
