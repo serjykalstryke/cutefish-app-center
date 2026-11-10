@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 — 2026-11-10
+
+- Add saved Stable/Beta catalog selectors for Flatpak and Snap; filter alternatives before application grouping and preserve every installed/update target.
+- Collapse configured stable/beta Flathub pairs into one visible source per scope, following the catalog selector while retaining both remotes for installed software.
+- Verify real Snap beta channels, versions and revisions with bounded cached lookups, without falling back to stable when beta is unavailable.
+- Add reviewed Debian Stable, Testing and Unstable archive selection and restoration of the original source configuration. A fixed Polkit-authorized helper backs up and journals source edits, keeps third-party entries, rejects stale/custom/externally changed configuration, and never installs packages. Package upgrades remain separately reviewed.
+
 ## 0.5.0 — 2026-11-10
 
 - Add Software Sources in Settings: inspect provider status, review enabling/disabling configured Debian repositories, and install missing Flatpak/Snap support through PackageKit.

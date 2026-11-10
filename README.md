@@ -50,7 +50,7 @@ and that you are using the current native toolkit.
 sudo apt update
 sudo apt install build-essential cmake git python3 python3-gi \
     packagekit libpackagekit-glib2-18 xdg-utils squashfs-tools util-linux \
-    libfuse2t64 dbus appstream gir1.2-appstream-1.0 gir1.2-flatpak-1.0 apt-config-icons
+    libfuse2t64 dbus appstream gir1.2-appstream-1.0 gir1.2-flatpak-1.0 apt-config-icons pkexec debian-archive-keyring ca-certificates
 sudo apt update
 ```
 
@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.5.0_amd64.deb
-sudo apt install ./cutefish-app-center_0.5.0_amd64.deb
+    --output cutefish-app-center_0.6.0_amd64.deb
+sudo apt install ./cutefish-app-center_0.6.0_amd64.deb
 cutefish-app-center
 ```
 
@@ -179,8 +179,10 @@ saved choice falls back to installed/preferred formats. Preferences do not move
 installed applications between formats or change their update targets.
 
 Preferences are saved automatically. See [preference storage](docs/PREFERENCES.md)
-for the file location, schema and error handling. Source management and Snap
-release channels are available now. Background checks, panel integration and
+for the file location, schema and error handling. Source management, saved stable/beta catalog selectors and per-app Snap
+release channels are available now. The Debian release selector reviews switching
+operating-system repositories to Stable, Testing or Unstable; package upgrades
+are reviewed separately with Update All. Background checks, panel integration and
 automatic installation policy remain later stages.
 
 Common catalog/desktop identifiers join packages for the same application.
@@ -283,6 +285,7 @@ python3 tests/test_catalog_icons.py -v
 python3 tests/test_packaging.py -v
 python3 tests/test_management.py -v
 python3 tests/test_sources.py -v
+python3 tests/test_releases.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
@@ -308,6 +311,7 @@ CUTEFISH_APP_CENTER_BACKEND="$PWD/backend/app_center_backend.py" \
 ./build/cutefish-app-center-search-smoke
 ./build/cutefish-app-center-settings-smoke
 ./build/cutefish-app-center-sources-smoke
+./build/cutefish-app-center-releases-smoke
 ```
 
 Native checks use private preference files, including live read-only checks.
@@ -315,6 +319,11 @@ The settings smoke test verifies format priority, exact saved selections across
 an application restart, clearing and disabling saved choices, default restoration,
 invalid/unwritable files, multiple writers, and light/dark rendering. Its provider
 fixture does not modify installed software.
+
+The releases smoke test verifies persisted stable/beta choices, exclusive search
+alternatives, collapsed Flathub rows and canceling the Debian release review.
+It does not execute the administrator helper. Python tests use a disposable
+filesystem for Debian source changes and recovery.
 
 The sources smoke test uses a private fixture to verify repository scopes, review
 before mutation, missing-provider setup, beta-source presets and channel reviews.
