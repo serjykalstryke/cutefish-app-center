@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 — 2026-11-10
+
+- Add Software Sources in Settings: inspect provider status, review enabling/disabling configured Debian repositories, and install missing Flatpak/Snap support through PackageKit.
+- Manage Flatpak remotes separately for the current account and system, with signed HTTPS repository imports, stable/beta Flathub presets, enable/disable, and removal of unused sources.
+- Add published Snap track/channel choices to application details, review exact revisions and confinement, apply channel changes, and verify the resulting tracking channel.
+- Recheck source state and signed repository contents before committing a reviewed change. Preserve installed software when sources are disabled and protect remotes used by apps or runtimes.
+
 ## 0.4.0 — 2026-11-08
 
 - Add Settings in the sidebar and application menu, with Ctrl+, to configure preferred application format order.

@@ -68,9 +68,9 @@ Install optional providers if you want to use them:
 sudo apt install flatpak snapd
 ```
 
-App Center uses existing APT sources, Flatpak remotes and snapd configuration;
-it does not add repositories automatically. Configure a Flatpak remote such
-as Flathub using its [official setup instructions](https://flathub.org/setup).
+App Center uses the system’s package services. **Settings → Software Sources**
+can install missing Flatpak/Snap support, manage configured sources, and add
+a signed Flatpak source such as Flathub after review. No source is added automatically.
 
 ### 3. Clone and compile
 
@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.4.0_amd64.deb
-sudo apt install ./cutefish-app-center_0.4.0_amd64.deb
+    --output cutefish-app-center_0.5.0_amd64.deb
+sudo apt install ./cutefish-app-center_0.5.0_amd64.deb
 cutefish-app-center
 ```
 
@@ -159,7 +159,8 @@ normal system installation.
 - **Settings:** arrange Native, Flatpak, Snap and AppImage by preference, choose
   whether source selections are remembered between sessions, clear saved
   choices, or restore defaults. Settings is also in the application-name menu
-  and opens with Ctrl+,.
+  and opens with Ctrl+,. **Software Sources** manages configured Debian
+  repositories, Flatpak sources and provider setup. See [source management](docs/SOURCES.md).
 
 ```sh
 cutefish-app-center ~/Downloads/example.deb
@@ -178,9 +179,9 @@ saved choice falls back to installed/preferred formats. Preferences do not move
 installed applications between formats or change their update targets.
 
 Preferences are saved automatically. See [preference storage](docs/PREFERENCES.md)
-for the file location, schema and error handling. This first Settings release
-covers source selection; repository/provider setup, release-channel controls,
-background checks, panel integration and automatic installation are later stages.
+for the file location, schema and error handling. Source management and Snap
+release channels are available now. Background checks, panel integration and
+automatic installation policy remain later stages.
 
 Common catalog/desktop identifiers join packages for the same application.
 Exact name/package aliases fill metadata gaps only where they do not conflict
@@ -281,6 +282,7 @@ python3 tests/test_debian_catalog.py -v
 python3 tests/test_catalog_icons.py -v
 python3 tests/test_packaging.py -v
 python3 tests/test_management.py -v
+python3 tests/test_sources.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
 ```
 
@@ -305,6 +307,7 @@ CUTEFISH_APP_CENTER_BACKEND="$PWD/backend/app_center_backend.py" \
 ./build/cutefish-app-center-management-smoke
 ./build/cutefish-app-center-search-smoke
 ./build/cutefish-app-center-settings-smoke
+./build/cutefish-app-center-sources-smoke
 ```
 
 Native checks use private preference files, including live read-only checks.
@@ -312,6 +315,10 @@ The settings smoke test verifies format priority, exact saved selections across
 an application restart, clearing and disabling saved choices, default restoration,
 invalid/unwritable files, multiple writers, and light/dark rendering. Its provider
 fixture does not modify installed software.
+
+The sources smoke test uses a private fixture to verify repository scopes, review
+before mutation, missing-provider setup, beta-source presets and channel reviews.
+It never changes the host’s sources or services.
 
 The search smoke test uses a private cross-provider fixture to check one app
 card, exact source choices, installed-source preference, source-bound actions,
@@ -352,14 +359,17 @@ it does not require downgrading Cutefish or replacing system libraries.
 
 This is a first version. AppImage downloads/updates are manual, named system
 Flatpak installations are unsupported. Debian artwork depends on the catalogs
-and icon caches published by configured repositories. There is no repository
-editor, transaction history, permission editor or ratings yet. Search/display limits
+and icon caches published by configured repositories. Debian source
+address/key editing, transaction history, permission editing and ratings remain
+outside the current scope. Search/display limits
 are described in [architecture notes](docs/ARCHITECTURE.md).
 
 Debian transactions use PackageKit simulation, review, and normal Polkit
 authorization. Essential/protected removals are refused. Flatpak updates use
 libflatpak to review and recheck exact commits and required runtime changes;
-new sources and interactive repository authentication are unsupported in this flow.
+new remotes required implicitly by an update and interactive repository
+authentication are unsupported in this flow. Explicit signed source imports
+are available in Settings.
 Flatpak installs/removals still use the CLI and do not provide the same full
 dependency preview. Snap reviews list the selected refreshes; snapd resolves
 supporting components when execution starts. Local Debian packages and AppImages should come
