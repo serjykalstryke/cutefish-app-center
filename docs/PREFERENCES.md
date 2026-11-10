@@ -1,9 +1,10 @@
 # Application source preferences
 
 Settings is available from the sidebar, application menu and Ctrl+,. It currently
-controls format order and remembered application choices. Repository management,
-provider setup, release channels, background monitoring and unattended installation
-are separate milestones; no scheduled update policy is enabled by these controls.
+controls format order, remembered application choices and stable/beta catalog
+selection for Flatpak and Snap. Software Sources also manages repositories and
+Debian release configuration through separate reviews. Background monitoring and
+unattended installation remain separate milestones.
 
 ## Selection rules
 
@@ -35,7 +36,8 @@ relative. Development/tests can override the full path with
     "version": 1,
     "source_order": ["deb", "flatpak", "snap", "appimage"],
     "remember_choices": true,
-    "application_choices": {}
+    "application_choices": {},
+    "catalog_releases": {"flatpak": "stable", "snap": "stable"}
 }
 ```
 
@@ -56,3 +58,25 @@ shows a notice and disables edits until the user chooses Restore Defaults. Faile
 writes do not change the in-memory preference order. An explicit source selection
 can still apply for that session if persistence fails, with an error explaining
 that it could not be saved. Opening Settings does not write a preference file.
+
+## Catalog release selection
+
+Software Sources has independent Flatpak and Snap dropdowns. Each defaults to
+Stable. Flatpak Beta / testing includes beta, nightly and other explicitly named
+testing branches/remotes. Snap Beta selects an actual published beta channel,
+with latest/beta preferred when multiple tracks offer beta. Results without the
+selected release are omitted before grouping. There is no stable fallback in a
+beta search. Featured Flatpak recommendations follow the same selection.
+
+These controls filter new catalog choices; they do not disable remotes, migrate
+installed apps or filter installed/update inventories. A saved app source hidden
+by this selection follows the normal unavailable-choice fallback. Once an app is
+installed, its exact installation/update source continues to be used. A Snap
+already on another channel exposes a separate Change Channel review.
+
+The optional `catalog_releases` object retains only `flatpak` and `snap`, with
+values `stable` or `beta`. Missing/unknown values use stable. Writes preserve
+unrelated fields under the existing lock. Restore Defaults restores stable
+catalogs along with format order and source choices; it does not alter Debian
+sources. Debian release selection is system configuration and is not stored in
+this per-user preference file.

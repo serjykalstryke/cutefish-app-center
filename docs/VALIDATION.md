@@ -340,3 +340,44 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   Background monitoring, panel integration, automatic installation policy, Debian
   source-address/key editing and repository-authentication flows remain outside
   this milestone.
+
+## 0.6.0 Catalog releases and Debian archives — November 10, 2026
+
+- All 200 Python checks and nine native checks pass. Stable/beta filtering occurs
+  before application grouping, preserving installation/update inventories and
+  saved source selection behavior. Tests cover one remote with multiple branches,
+  custom-named beta remotes, numeric stable branches, per-scope Flathub pairing,
+  real Snap channel/revision selection, missing beta channels, lookup failure,
+  cache reuse, bounded queries and published stable tracks.
+- Native checks select beta independently for Flatpak and Snap, verify one
+  Flathub row, reopen App Center with saved choices, see only beta alternatives,
+  return to stable, and cancel an exact Debian Testing source review. All earlier
+  catalog, management, source, preference, metadata and theme checks still pass.
+  Light and dark release settings were rendered and visually inspected.
+- Filesystem tests exercise Deb822 and legacy list sources, exact restoration,
+  preserved third-party/disabled entries, components/types/architectures and
+  existing backports. Stale reviews, changed files/permissions, additional Debian
+  entries, symlinks, unsupported trust/options and invalid releases are refused.
+  Write failure rolls back changes; a simulated power loss recovers via the
+  durable journal. Private backups and matching unprivileged/helper review
+  fingerprints are checked. Debian's official archive-keyring symlink and
+  standard mirror-list form are supported.
+- The final helper/module were tested in a disposable Debian 13 VM. Real Testing,
+  Unstable and Stable source switches completed; signed Testing and
+  testing-security indexes refreshed through APT. Restoring from an ordinary
+  user's review produced the exact original source bytes. Third-party sources
+  and installed package versions were unchanged. Extra helper fields were
+  rejected without mutation. The installed Polkit action was recognized, and an
+  unattended ordinary-user request was denied. These checks do not claim a full
+  Debian distribution upgrade or a live graphical helper-authorization test.
+- Cutefish Terminal collected a read-only preflight on David's desktop: its
+  Debian configuration is supported and source hashes match the pre-test
+  snapshot. A live Snap Store query advertised Firefox latest/beta with strict
+  confinement. A full live Firefox Snap beta search then returned beta-only
+  channel choices with no warnings, including Firefox latest/beta. It used an
+  isolated preference file. No Debian source switch was performed on the
+  development host.
+- The 0.6.0 package matches the tested executable, backend, source module, fixed
+  helper and Polkit policy; shared runtime and unresolved-symbol checks pass.
+  Repository address/key editing, arbitrary custom mirrors, APT pin editing and
+  automatic distribution downgrade are not implemented.

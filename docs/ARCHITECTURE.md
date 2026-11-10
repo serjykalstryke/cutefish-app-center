@@ -193,3 +193,30 @@ Repository entries at the installed version are treated as replacement builds
 for reinstall rather than upgrades. A valid review must contain changes, and
 the installed package must reach the reviewed version before the app reports
 success. Both single updates and Update All use these checks.
+
+## Catalog release policy and Debian source helper
+
+`Preferences` persists per-user Flatpak/Snap catalog choices. The backend filters
+provider alternatives before application identity grouping. Snap beta lookups use
+a bounded, short-lived metadata cache; plan/apply always revalidate channel and
+revision with snapd. Installed inventories, updates and package targets are not
+filtered by catalog preferences.
+
+`backend/debian_releases.py` owns read-only source analysis, deterministic reviews,
+source generation, integrity checks and transactional writes. The normal backend
+only reads it. `/usr/libexec/cutefish-app-center/debian_sources_helper.py` is the
+fixed root entry point registered by `org.cutefish.app-center.manage-debian-sources`
+in `data/org.cutefish.AppCenter.policy`. Only active-session administrator
+authorization permits execution; there is no unattended or inactive grant. The
+helper accepts exactly `release` and `fingerprint`, a bounded JSON line, and no
+arguments. It never installs packages, runs arbitrary commands or accepts caller
+paths. The installed module/script/policy are root-owned package files.
+
+Original source backups live under `/var/lib/cutefish-app-center/source-backups`
+with 0700 directory/0600 files. The root-owned 0644 journal/state JSON contains
+source paths and hashes needed for unprivileged review, not source file contents.
+A source hash, permission or managed-state mismatch blocks mutation. Source
+updates are written atomically; rollback restores prior bytes on a reported
+failure, and the durable journal supports explicit restoration after interruption.
+Original backups are retained after restoration. Tests use isolated filesystem
+roots; the installed helper has no root override.

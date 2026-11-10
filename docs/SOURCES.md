@@ -13,12 +13,46 @@ exact configured entries. This affects all users. Source IDs are retained exactl
 and re-read before and after the change. PackageKit’s APT backend controls which
 entries can be changed and reports any authorization or backend error.
 
-Adding/editing Debian source addresses, suites, components or signing keys is not
-implemented. A universal “stable/beta/nightly” setting would not describe Debian
-sources correctly. Use the distribution’s source configuration for those edits;
-App Center does not rewrite APT files or run a custom privileged helper.
+The **Debian release** dropdown offers **Original system configuration**,
+**Debian Stable**, **Debian Testing** and **Debian Unstable**. Selecting a different
+release first opens a review showing the exact source files, generated archive
+entries, signing keyring, restoration behavior and operating-system implications.
+The dropdown changes only after a successful authorized commit. No package is
+installed or downgraded by switching sources. The catalog is then refreshed;
+package changes remain separately reviewed through **Installed → Update All**.
+Changing back to Stable or restoring sources does not downgrade packages.
+
+Stable, Testing and Unstable follow Debian’s moving release aliases, including
+future major-version transitions. The switcher recognizes official Debian archive hosts and Debian's standard
+mirror-list files. It preserves enabled components, source-package types and
+consistent architecture restrictions, uses canonical official HTTPS archives and
+the dedicated Debian archive keyring, and backs up original active Debian
+entries. Stable includes updates/security and previously configured backports.
+Testing uses testing and testing-security; Unstable has neither a separate
+security suite nor stable-updates/backports. Existing third-party repositories
+and disabled original entries are retained. They may not support the new release.
+APT pinning and held packages remain system policy; App Center does not rewrite
+them or promise a complete distribution upgrade when the solver blocks changes.
+
+A fixed installed Polkit helper performs these source edits after administrator
+authorization. Its request accepts only an allowlisted release and reviewed
+fingerprint, never paths, file contents or commands. It has a system-wide lock,
+private durable backups and a journal, rechecks current files and verifies saved
+results. A failed operation rolls back completed writes; an interrupted change
+can restore the original configuration. Externally edited files or additional
+active Debian entries are refused rather than overwritten. Managed entries use
+the release dropdown instead of individual toggles. Unsupported custom source
+options, untrusted keys, unsafe permissions and unrecognized mirrors require
+manual source configuration. Custom repository address/key editing remains
+outside this UI.
 
 ## Flatpak
+
+The **Catalog release** dropdown chooses Stable or Beta / testing for search.
+Configured stable/beta Flathub pairs appear as one source row per scope, following
+this choice. Both remotes remain configured so installed apps can continue to
+receive their own updates. A source outside the selected release can still be
+managed, and adding a beta source does not select it automatically.
 
 Account and system remotes are distinct. Add a source using a public HTTPS
 `.flatpakrepo` address with an embedded signing key, or choose **Flathub (stable)**
@@ -45,7 +79,15 @@ the fixed Debian package `flatpak` or `snapd` through PackageKit. For an install
 but stopped Snap service, **Start Snap Support** requests starting `snapd.socket`
 through systemd’s normal authorization. It does not alter boot-time service policy.
 
-Snap uses the Snap Store. On an app card, **Release channel** lists the tracks and
+Snap uses the Snap Store. Its **Catalog release** dropdown selects Stable or Beta
+for new search results. Beta searches include non-stable Store matches, verify
+published channel maps and omit matches without a beta channel. Stable results
+are never substituted for missing beta builds. Channel lookups are cached for ten
+minutes and limited to the best 24 ranked matches per search; a broad search asks
+the user to narrow the query. Failures remain visible. Installation reviews
+always re-read the actual channel/revision, independently of this display cache.
+
+On an app card, **Release channel** lists the tracks and
 channels currently advertised for that snap. Stable, candidate, beta, edge and
 publisher-specific tracks appear only where actually published. Developer-mode
 snaps are not supported. Classic confinement is identified in the review.
