@@ -11,6 +11,11 @@ spec=importlib.util.spec_from_file_location('backend',Path(__file__).parents[1]/
 b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
 
 class DiscoverTests(unittest.TestCase):
+    def setUp(self):
+        self.catalog=patch.object(b,'catalog_releases',return_value={});self.catalog.start()
+        self.remotes=patch.object(b,'flatpak_remote_catalog_releases',return_value={});self.remotes.start()
+    def tearDown(self):self.catalog.stop();self.remotes.stop()
+
     def test_featured_apps_require_configured_available_refs(self):
         meta={('org.mozilla.firefox','x86_64','stable','flathub'):dict(name='Firefox',desktop_app=True,summary='Browser'),
               ('org.gimp.GIMP','x86_64','stable','removed'):dict(name='GIMP',desktop_app=True),

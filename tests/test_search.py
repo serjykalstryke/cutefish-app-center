@@ -19,6 +19,10 @@ def app(name, **kw):
 
 
 class SearchTests(unittest.TestCase):
+    def setUp(self):
+        self.catalog=patch.object(b,'catalog_releases',return_value={});self.catalog.start()
+    def tearDown(self):self.catalog.stop()
+
     def test_browser_synonyms_find_category_apps_without_brand_preferences(self):
         browsers = [app(name, categories=['Network', 'WebBrowser']) for name in ('Brave', 'Google Chrome', 'Firefox', 'An Unfamiliar App')]
         unrelated = [app('OBS', description='Includes a web browser plugin'),
@@ -154,8 +158,8 @@ class SearchTests(unittest.TestCase):
     def test_one_failed_search_provider_does_not_hide_ranked_results(self):
         def provider(source, mode, query):
             if source == 'snap': raise b.AppCenterError('offline')
-            return [app('Other', description='Firefox can view links'), app('Firefox')]
-        with patch.object(b, 'inventory_provider', side_effect=provider):
+            return [app('Other', source=source, scope='system', description='Firefox can view links'), app('Firefox', source=source, scope='system')]
+        with patch.object(b, 'flatpak_remote_catalog_releases', return_value={}), patch.object(b, 'inventory_provider', side_effect=provider):
             result = b.listing({'mode': 'search', 'query': 'firefox'})
         self.assertEqual(result['items'][0]['name'], 'Firefox')
         self.assertEqual(result['warnings'], ['snap: offline'])

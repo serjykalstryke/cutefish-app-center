@@ -22,6 +22,8 @@ static void click(ui::Window& window,ui::View* view){
 static void policyChecks(const std::filesystem::path& folder){
     auto path=folder/"policy.json";std::filesystem::remove(path);Preferences prefs(path);std::string error;
     assert(prefs.sourceOrder()==Preferences::formats());assert(prefs.rememberChoices());assert(prefs.choices().empty());
+    assert(prefs.catalogRelease("flatpak")=="stable");assert(prefs.setCatalogRelease("flatpak","beta",error));assert(Preferences(path).catalogRelease("flatpak")=="beta");
+    assert(!prefs.setCatalogRelease("snap","unknown",error));
     assert(prefs.setOrder({"snap","appimage","flatpak","deb"},error));
     J deb=J::object({{"source","deb"},{"id","browser"},{"search_key","deb-target"}});
     J flatpak=J::object({{"source","flatpak"},{"id","org.example.Browser"},{"scope","user"},{"search_key","flatpak-target"}});
@@ -41,6 +43,7 @@ static void policyChecks(const std::filesystem::path& folder){
     assert(reopened.setOrder({"flatpak","snap","deb","appimage"},error));
     assert(otherWindow.setChoice("app:other","flatpak-target",error));
     assert(Preferences(path).sourceOrder()[0]=="flatpak");assert(Preferences(path).choices().size()==1);
+    assert(reopened.setCatalogRelease("snap","beta",error));assert(otherWindow.clearChoices(error));assert(Preferences(path).catalogRelease("snap")=="beta");
     {std::ofstream file(path);file<<R"({"version":1,"source_order":["snap","snap","unknown"],"future_option":true})";}
     Preferences normalized(path);assert(normalized.sourceOrder()==std::vector<std::string>({"snap","deb","flatpak","appimage"}));
     assert(normalized.setChoice("app:browser","snap-target",error));
