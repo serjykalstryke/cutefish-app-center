@@ -26,7 +26,7 @@ def check_runtime(binary):
 parser=argparse.ArgumentParser()
 parser.add_argument('binary',type=Path)
 parser.add_argument('--check-only',action='store_true',help='Check runtime linkage without creating a package')
-parser.add_argument('--output',type=Path,default=Path('cutefish-app-center_0.5.0_amd64.deb'))
+parser.add_argument('--output',type=Path,default=Path('cutefish-app-center_0.6.0_amd64.deb'))
 args=parser.parse_args()
 check_runtime(args.binary)
 if args.check_only:raise SystemExit(0)
@@ -38,6 +38,9 @@ with tempfile.TemporaryDirectory(prefix='cutefish-app-center-package-') as temp:
   shutil.copyfile(src,dst);dst.chmod(0o755 if executable else 0o644)
  copy(args.binary,'usr/bin/cutefish-app-center',True)
  copy(source/'backend/app_center_backend.py','usr/libexec/cutefish-app-center/app_center_backend.py',True)
+ copy(source/'backend/debian_sources_helper.py','usr/libexec/cutefish-app-center/debian_sources_helper.py',True)
+ copy(source/'backend/debian_releases.py','usr/libexec/cutefish-app-center/debian_releases.py')
+ copy(source/'data/org.cutefish.AppCenter.policy','usr/share/polkit-1/actions/org.cutefish.AppCenter.policy')
  copy(source/'data/org.cutefish.AppCenter.desktop','usr/share/applications/org.cutefish.AppCenter.desktop')
  copy(source/'data/org.cutefish.AppCenter.svg','usr/share/icons/hicolor/scalable/apps/org.cutefish.AppCenter.svg')
  copy(source/'data/org.cutefish.AppCenter.metainfo.xml','usr/share/metainfo/org.cutefish.AppCenter.metainfo.xml')
@@ -47,16 +50,16 @@ with tempfile.TemporaryDirectory(prefix='cutefish-app-center-package-') as temp:
  size=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())//1024
  (root/'DEBIAN').mkdir()
  (root/'DEBIAN/control').write_text(f'''Package: cutefish-app-center
-Version: 0.5.0
+Version: 0.6.0
 Architecture: amd64
 Maintainer: Cutefish App Center contributors
-Provides: cutefish-store (= 0.5.0)
+Provides: cutefish-store (= 0.6.0)
 Replaces: cutefish-store
 Conflicts: cutefish-store
 Section: admin
 Priority: optional
 Installed-Size: {size}
-Depends: libc6 (>= 2.38), libgcc-s1, libstdc++6 (>= 14), cutefish-toolkit (>= 1.0~git20261102154148), python3, python3-gi, xdg-utils, squashfs-tools, util-linux, packagekit, libpackagekit-glib2-18, appstream (>= 1.0), gir1.2-appstream-1.0, gir1.2-flatpak-1.0 (>= 1.14), apt-config-icons
+Depends: libc6 (>= 2.38), libgcc-s1, libstdc++6 (>= 14), cutefish-toolkit (>= 1.0~git20261102154148), python3, python3-gi, xdg-utils, squashfs-tools, util-linux, packagekit, libpackagekit-glib2-18, appstream (>= 1.0), gir1.2-appstream-1.0, gir1.2-flatpak-1.0 (>= 1.14), apt-config-icons, pkexec, debian-archive-keyring, ca-certificates
 Recommends: flatpak, snapd, libfuse2t64
 Description: Native software manager for the current Cutefish desktop
  Initial prototype for Debian 13. Manages Debian packages through PackageKit,
