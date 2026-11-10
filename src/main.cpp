@@ -56,7 +56,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.5.0"
+#define APP_CENTER_VERSION "0.6.0"
 #endif
 
 static J branding() {
@@ -94,7 +94,8 @@ static std::string sourceChoiceName(const J& item) {
     if(str(item,"source")=="flatpak"){
         if(!str(item,"branch").empty())name+=" · "+str(item,"branch");
     }else if(str(item,"source")=="snap"){
-        if(!str(item,"channel").empty())name+=" · "+str(item,"channel");
+        auto channel=str(item,"requested_channel");if(channel.empty())channel=str(item,"channel");
+        if(!channel.empty())name+=" · "+channel;
     }
     return name+(item["catalog"].toBool()?" · Download":item["installed"].toBool()?" · Installed":" · Available");
 }
@@ -832,11 +833,12 @@ private:
         };
         auto* reset=content->addChild<Panel>();size(reset,-1,-1,true);
         label(reset,"Restore preferences",16,650,true);
-        label(reset,"Restore the default format order and clear saved choices. Installed applications and software sources are kept.",13,400,true);
+        label(reset,"Restore the default format order, stable catalog releases and saved choices. Installed applications and system software sources are kept.",13,400,true);
         auto* restore=reset->addChild<ui::Button>("Restore Defaults");size(restore,170,36);restore->setEnabled(!m_preview);
         restore->onClicked=[this]{
             std::string error;
             if(!m_preferences.reset(error)){message("Preferences",error);return;}
+            cancelDiscover();m_featured.clear();m_featuredLoaded=false;
             m_sourceChoices.clear();m_app.loop().post([this]{if(m_page=="settings")settingsPage();});
         };
     }
@@ -886,6 +888,56 @@ private:
         };
         m_review->show();
     }
+    void catalogReleaseControl(ui::Column* panel,const std::string& source) {
+        label(panel,"Catalog release",12,650);
+        if(!m_preferences.error().empty())label(panel,m_preferences.error(),12,400,true);
+        auto* release=panel->addChild<ui::ComboBox>(std::vector<std::string>{"Stable",source=="snap"?"Beta":"Beta / testing"});size(release,250,36);
+        release->setToolTip(source=="snap"?"Snap catalog release":"Flatpak catalog release");release->setCurrentIndex(m_preferences.catalogRelease(source)=="beta"?1:0);
+        release->setEnabled(!m_preview && m_preferences.error().empty());
+        release->onActivated=[this,source,release](int n){
+            if(n<0 || n>1)return;
+            std::string error;
+            if(!m_preferences.setCatalogRelease(source,n==1?"beta":"stable",error)){release->setCurrentIndex(m_preferences.catalogRelease(source)=="beta"?1:0);message("Catalog release",error);return;}
+            cancelDiscover();m_featuredLoaded=false;m_featured.clear();m_app.loop().post([this]{if(m_page=="settings")settingsPage();});
+        };
+        label(panel,"Search shows this release only. Installed apps keep their existing sources and update channels.",12,400,true);
+    }
+    void debianReleaseControl(ui::Column* panel) {
+        const auto status=m_sources["debian_release"];
+        label(panel,"Debian release",12,650);
+        auto* release=panel->addChild<ui::ComboBox>(std::vector<std::string>{"Original system configuration","Debian Stable","Debian Testing","Debian Unstable"});size(release,-1,36,true);release->setToolTip("Debian operating-system release");
+        const std::vector<std::string> ids={"system","stable","testing","unstable"};const auto current=str(status,"current");
+        release->setCurrentIndex(int(std::find(ids.begin(),ids.end(),current)==ids.end()?0:std::find(ids.begin(),ids.end(),current)-ids.begin()));
+        release->setEnabled(!m_preview && status["available"].toBool());
+        if(!str(status,"error").empty())label(panel,str(status,"error"),12,400,true);
+        label(panel,"Changing Debian’s release affects operating-system packages. Review the source switch first, then review upgrades with Update All. Returning to Stable does not downgrade installed packages.",12,400,true);
+        release->onActivated=[this,ids,current,release](int n){
+            if(n<0 || size_t(n)>=ids.size() || ids[n]==current)return;
+            auto selected=ids[n];release->setCurrentIndex(int(std::find(ids.begin(),ids.end(),current)-ids.begin()));
+            prepareDebianRelease(selected);
+        };
+        if(status["recovery"].toBool()){
+            auto* restore=panel->addChild<ui::Button>("Restore Original Debian Sources");restore->onClicked=[this]{prepareDebianRelease("system");};
+        }
+    }
+    void prepareDebianRelease(const std::string& release) {
+        request(J::object({{"op","plan_debian_release"},{"release",release}}),[this](const J& result){
+            auto plan=result["plan"];
+            m_review=std::make_unique<ui::DialogWindow>(&m_window,"Review Debian release sources",720);
+            auto* content=m_review->setContent<ui::Column>();content->setSpacing(14);content->setMargins(ui::Margins::all(20));label(content,str(plan,"title"),21,700,true);
+            auto* scroll=content->addChild<ui::ScrollView>();size(scroll,-1,360,true);auto* details=scroll->setContent<ui::Column>();details->setSpacing(12);
+            label(details,str(plan,"note"),13,400,true);label(details,"Source files",14,650);
+            for(const auto& change:plan["changes"].toArray())label(details,str(change,"path"),12,400,true);
+            if(!str(plan,"configuration").empty()){label(details,"Selected Debian repositories",14,650);label(details,str(plan,"configuration"),12,400,true);}
+            auto* actions=content->addChild<ui::Row>();actions->setSpacing(12);actions->addStretch();
+            auto* cancel=actions->addChild<ui::Button>("Cancel");cancel->onClicked=[this]{m_review->close();};
+            auto* confirm=actions->addChild<ui::DialogButton>("Switch Debian Sources",true);
+            confirm->onClicked=[this,plan]{m_review->close();request(J::object({{"op","apply_debian_release"},{"plan",plan}}),[this](const J&){
+                request(J::object({{"op","refresh"}}),[this](const J&){loadSources();message("Debian sources changed","The catalog has been refreshed. Open Installed and review Update All before upgrading packages.");},true,{},
+                    [this](const std::string& error,bool){loadSources();message("Debian sources changed","The source switch was saved, but the catalog could not be refreshed. Refresh the Debian catalog before reviewing upgrades.\n\n"+error);});
+            },true);};m_review->show();
+        });
+    }
     void sourcesPage(ui::Column* content) {
         auto* heading=content->addChild<ui::Row>();heading->setSpacing(12);size(heading,-1,38,true);
         size(label(heading,"Software sources",21,650),-1,-1,true);
@@ -908,7 +960,9 @@ private:
             }else if(id=="snap" && !available){
                 auto* start=panel->addChild<ui::Button>("Start Snap Support");size(start,220,36);start->onClicked=[this]{prepareSource(J::object({{"source","snap"},{"id","snap"}}),"start");};
             }
-            if(id=="deb")label(panel,"Manage configured Debian repositories. Adding or editing repository addresses and keys is handled by your distribution’s source configuration.",12,400,true);
+            if(id=="deb")debianReleaseControl(panel);
+            if(id=="flatpak" || id=="snap")catalogReleaseControl(panel,id);
+            if(id=="deb")label(panel,"Manage configured repositories below. Custom repository addresses and keys can be edited with the system source tools.",12,400,true);
             if(id=="flatpak"){
                 label(panel,"Sources are separate for your account and the whole system. Disabling a source keeps its apps installed and stops updates from that source.",12,400,true);
                 auto* add=panel->addChild<ui::Button>("Add Flatpak Source…");size(add,220,36);add->setEnabled(available);add->onClicked=[this]{addFlatpakDialog();};
@@ -918,15 +972,23 @@ private:
             bool any=false;
             for(const auto& repo:m_sources["repositories"].toArray()){
                 if(str(repo,"source")!=id)continue;
+                if(id=="flatpak" && !str(repo,"catalog_family").empty()){
+                    bool paired=false;
+                    for(const auto& other:m_sources["repositories"].toArray())if(str(other,"source")==id && str(other,"scope")==str(repo,"scope") && str(other,"catalog_family")==str(repo,"catalog_family") && str(other,"catalog_release")!=str(repo,"catalog_release"))paired=true;
+                    if(paired && str(repo,"catalog_release")!=m_preferences.catalogRelease("flatpak"))continue;
+                }
                 any=true;
                 auto* block=panel->addChild<ui::Column>();block->setSpacing(7);block->setMargins({0,10,0,10});size(block,-1,-1,true);
-                label(block,str(repo,"display_name")+(id=="flatpak"?" · "+str(repo,"scope"):""),14,600,true);
+                label(block,(id=="flatpak" && str(repo,"catalog_family")=="flathub"?std::string("Flathub"):str(repo,"display_name"))+(id=="flatpak"?" · "+str(repo,"scope"):""),14,600,true);
                 if(!str(repo,"display_url").empty())label(block,str(repo,"display_url"),12,400,true);
+                if(id=="flatpak" && !str(repo,"catalog_release").empty() && str(repo,"catalog_release")!=m_preferences.catalogRelease("flatpak"))label(block,"Outside the selected catalog release",12,500,true);
                 const bool enabled=repo["enabled"].toBool();
                 label(block,std::string(enabled?"Enabled":"Disabled")+(id=="flatpak"?(repo["verified"].toBool()?" · Signatures verified":" · Signature verification disabled"):""),12,500,true);
                 auto* buttons=block->addChild<ui::Row>();buttons->setSpacing(10);size(buttons,-1,34,true);
                 auto target=J::object({{"source",id},{"id",repo["id"]},{"scope",repo["scope"]}});
-                auto* toggle=buttons->addChild<ui::Button>(enabled?"Disable":"Enable");size(toggle,110,32);toggle->onClicked=[this,target,enabled]{prepareSource(target,enabled?"disable":"enable");};
+                auto* toggle=buttons->addChild<ui::Button>(enabled?"Disable":"Enable");size(toggle,110,32);toggle->setEnabled(!repo["release_managed"].toBool());
+                if(repo["release_managed"].toBool())toggle->setToolTip("Use the Debian release dropdown to manage this entry");
+                toggle->onClicked=[this,target,enabled]{prepareSource(target,enabled?"disable":"enable");};
                 if(id=="flatpak"){
                     auto* remove=buttons->addChild<ui::Button>("Remove Source");size(remove,150,32);remove->setEnabled(repo["installed_count"].toInt()==0);
                     remove->setToolTip("Remove only sources with no installed apps or runtimes");remove->onClicked=[this,target]{prepareSource(target,"remove");};
@@ -1225,7 +1287,7 @@ private:
         auto* title=identity->addChild<ui::Column>();title->setSpacing(5);size(title,-1,-1,true);
         const bool unified=m_page!="installed" && !str(item,"application_name").empty();
         label(title,unified?str(item,"application_name"):str(item,"name"),23,700,true);
-        auto* status=label(title,item["catalog"].toBool()?"AppImage download":item["installed"].toBool()?"Installed":item["application_installed"].toBool()?"Installed from another source":"Available",11,500);status->setColor(ui::ColorId::DisabledText);
+        auto* status=label(title,item["catalog"].toBool()?"AppImage download":item["channel_change"].toBool()?"Installed · another channel":item["installed"].toBool()?"Installed":item["application_installed"].toBool()?"Installed from another source":"Available",11,500);status->setColor(ui::ColorId::DisabledText);
         auto summary=unified?str(item,"application_summary"):str(item,"summary");
         if(!summary.empty())label(panel,summary,13,400,true);
         if(!str(item,"publisher").empty())label(panel,str(item,"publisher")+(item["publisher_verified"].toBool()?" · Verified Snap publisher":""),12,550,true);

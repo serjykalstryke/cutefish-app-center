@@ -41,6 +41,13 @@ public:
         for(const auto& name:formats())if(std::find(order.begin(),order.end(),name)==order.end())order.push_back(name);
         return order;
     }
+    std::string catalogRelease(const std::string& source) const {
+        auto value=m_data["catalog_releases"][source].toString();return value=="beta"?"beta":"stable";
+    }
+    bool setCatalogRelease(const std::string& source,const std::string& release,std::string& error) {
+        if((source!="flatpak" && source!="snap") || (release!="stable" && release!="beta")){error="Invalid catalog release.";return false;}
+        return save([&](Json& next){auto values=next["catalog_releases"];if(!values.isObject())values=Json::object();values.insert(source,release);next.insert("catalog_releases",values);},error);
+    }
     bool rememberChoices() const {return m_data["remember_choices"].toBool(true);}
     std::map<std::string,std::string> choices() const {
         std::map<std::string,std::string> result;
