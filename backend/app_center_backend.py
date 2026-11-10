@@ -107,7 +107,7 @@ class PackageKit:
                                  self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION,
                                  120000, None).unpack()
 
-    def transaction(self, method, signature, values, report=None):
+    def transaction(self, method, signature, values, report=None, on_repository=None):
         try:
             path = self.call(PK_ROOT, PK_NAME, "CreateTransaction")[0]
         except Exception as e:
@@ -145,6 +145,8 @@ class PackageKit:
                 errors.append(args[1])
             elif name == "RequireRestart":
                 restarts.append(args[0])
+            elif name == "RepoDetail" and on_repository:
+                on_repository(dict(id=args[0], name=args[1], enabled=args[2]))
             elif name in ("EulaRequired", "RepoSignatureRequired", "MediaChangeRequired"):
                 errors.append("The package service requires an additional license, signing key or installation medium. Use the system package tools to resolve it.")
             elif name == "Finished":
@@ -756,6 +758,35 @@ def snap_api(path, body=None):
     finally:
         conn.close()
 
+def snap_channel(value):
+    if not isinstance(value, str) or len(value) > 150:
+        raise AppCenterError('Invalid Snap channel.')
+    parts = value.split('/')
+    if len(parts) == 1:
+        parts.insert(0, 'latest')
+    if (len(parts) not in (2, 3) or parts[1] not in ('stable', 'candidate', 'beta', 'edge') or
+            any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+_-]*', p) for p in parts)):
+        raise AppCenterError('Invalid Snap channel.')
+    return '/'.join(parts)
+
+
+def snap_channels(info):
+    result = []
+    for name, record in (info.get('channels') or {}).items():
+        try:
+            channel = snap_channel(name)
+        except AppCenterError:
+            continue
+        revision = str(record.get('revision', ''))
+        if not revision.isdigit():
+            continue
+        result.append(dict(channel=channel, revision=revision, version=record.get('version', ''),
+                           confinement=record.get('confinement', info.get('confinement', 'strict'))))
+    risks = {'stable': 0, 'candidate': 1, 'beta': 2, 'edge': 3}
+    return sorted(result, key=lambda r: (r['channel'].split('/')[0] != 'latest', r['channel'].split('/')[0],
+                                        risks[r['channel'].split('/')[1]], r['channel']))
+
+
 def snap_items(query=None, updates=False, limit=LIMIT):
     if query is not None:
         path = "/v2/find?" + urllib.parse.urlencode({"q": search_lookup(query)})
@@ -775,6 +806,8 @@ def snap_items(query=None, updates=False, limit=LIMIT):
              for x in data if query is None or x.get("type", "app") == "app"]
     items = ranked_search(items, query) if query is not None else items[:limit] if limit else items
     for item in items:
+        if item['id'] in installed_records:
+            item['channel'] = installed_records[item['id']].get('tracking-channel') or installed_records[item['id']].get('channel', 'stable')
         item['installed_revision'] = str(installed_records.get(item['id'], {}).get('revision', ''))
         item['installed_version'] = installed_records.get(item['id'], {}).get('version', '')
     records = {x['name']: x for x in data}
@@ -980,6 +1013,8 @@ def validate_target(target):
     pattern = PACKAGE if source == "deb" else APPID
     if not pattern.fullmatch(ident):
         raise AppCenterError("Invalid software identifier.")
+    if source == "snap" and "requested_channel" in target:
+        snap_channel(target["requested_channel"])
     if source == "flatpak":
         if target.get("scope") not in ("user", "system"):
             raise AppCenterError("Choose a Flatpak installation scope.")
@@ -1016,7 +1051,7 @@ def pk_args(target, action, flags):
 
 def plan(target, action):
     validate_target(target)
-    if action not in ("install", "remove", "update"):
+    if action not in ("install", "remove", "update", "switch-channel") or action == "switch-channel" and target["source"] != "snap":
         raise AppCenterError("Unsupported software operation.")
     changes = []
     note = ""
@@ -1057,21 +1092,38 @@ def plan(target, action):
             changes, note = flatpak_group['changes'], flatpak_group['note']
     elif source == "snap":
         path = "/v2/snaps/" + urllib.parse.quote(target["id"], safe="")
-        if action == "install":
-            found = snap_api("/v2/find?" + urllib.parse.urlencode({"name": target["id"]}))["result"]
+        if action in ('install', 'switch-channel'):
+            found = snap_api('/v2/find?' + urllib.parse.urlencode({'name': target['id']}))['result']
             if len(found) != 1:
-                raise AppCenterError("Snap is no longer available.")
-            confinement = found[0].get("confinement", "strict")
+                raise AppCenterError('Snap is no longer available.')
+            channel = snap_channel(target.get('requested_channel', 'latest/stable'))
+            candidate = next((c for c in snap_channels(found[0]) if c['channel'] == channel), None)
+            if candidate is None:
+                raise AppCenterError('This Snap channel is no longer available. Reload the app details.')
+            target = dict(target, requested_channel=channel, offered_revision=candidate['revision'])
+            confinement = candidate['confinement']
+            if action == 'switch-channel':
+                installed = snap_api(path)['result']
+                tracking = snap_channel(installed.get('tracking-channel') or installed.get('channel', 'stable'))
+                if tracking == channel:
+                    raise AppCenterError('This app already tracks that channel. Reload the app details.')
+                target.update(previous_channel=tracking, previous_revision=str(installed.get('revision', '')))
         else:
-            record = snap_api(path)["result"]
+            record = snap_api(path)['result']
             if action == 'remove' and record.get('type') in ('base', 'core', 'os', 'snapd', 'kernel', 'gadget'):
                 raise AppCenterError('This is a protected Snap system component.')
-            confinement = record.get("confinement", "strict")
+            confinement = record.get('confinement', 'strict')
         if confinement == "devmode":
             raise AppCenterError("Developer mode snaps are not supported by this version.")
         target = dict(target, confinement=confinement)
         note = ("Classic confinement: this app has broad access to your files and system, similar to a native application." if confinement == "classic" else "This snap uses strict confinement.")
         note += " Snapd manages shared bases, dependencies, automatic refreshes and removal snapshots."
+        if action in ('install', 'switch-channel'):
+            note += '\nChannel: ' + channel + ' · Revision: ' + target['offered_revision']
+            if action == 'switch-channel':
+                note += '\nCurrently tracking: ' + target['previous_channel'] + '. The app may change version, including a downgrade. Future Snap refreshes will follow the selected channel.'
+            if channel.split('/')[1] != 'stable':
+                note += '\nThis channel contains testing builds and may be less reliable than stable releases.'
         changes = [{"info": action, "id": target["id"], "summary": target.get("name", target["id"])}]
     else:
         if action == "update":
@@ -1402,9 +1454,10 @@ def apply(approved):
                 args += ["--", target["remote"], flatpak_ref(target)] if action == "install" else ["--", flatpak_ref(target)]
                 stream_command(args)
         elif source == "snap":
-            body = {"action": {"update": "refresh"}.get(action, action)}
-            if action == "install":
-                body["channel"] = "stable"
+            body = {"action": {"update": "refresh", "switch-channel": "refresh"}.get(action, action)}
+            if action in ("install", "switch-channel"):
+                body["channel"] = target["requested_channel"]
+                body["revision"] = target["offered_revision"]
                 if target.get("confinement") == "classic":
                     body["classic"] = True
             reply = snap_api("/v2/snaps/" + urllib.parse.quote(target["id"], safe=""), body)
@@ -1421,6 +1474,11 @@ def apply(approved):
                             raise AppCenterError(change.get("err", "Snap transaction did not complete."))
                         break
                     time.sleep(0.7)
+            if action in ('install', 'switch-channel'):
+                installed = snap_api('/v2/snaps/' + urllib.parse.quote(target['id'], safe=''))['result']
+                tracking = snap_channel(installed.get('tracking-channel') or installed.get('channel', 'stable'))
+                if tracking != target['requested_channel'] or str(installed.get('revision')) != target['offered_revision']:
+                    raise AppCenterError('Snap completed without reaching the reviewed channel and revision. Reload the app and check its tracking channel.')
         elif action == "install":
             import_appimage(target)
         else:
@@ -2371,6 +2429,15 @@ def app_details(target, artwork=True):
         except AppCenterError:
             info = installed or {}
             warnings.append('Store details are unavailable; showing installed information.')
+        options = snap_channels(info)
+        tracking = snap_channel((installed or {}).get('tracking-channel') or (installed or {}).get('channel', 'stable'))
+        requested = snap_channel(target.get('requested_channel') or (tracking if installed else 'latest/stable'))
+        selected = next((c for c in options if c['channel'] == requested), None)
+        item.update(channel=tracking if installed else requested, requested_channel=requested, channel_options=options,
+                    tracking_channel=tracking if installed else '', channel_change=bool(installed and requested != tracking),
+                    channel_unavailable=selected is None)
+        if selected is None:
+            warnings.append('This channel is not currently advertised by the Snap Store. Choose an available channel to install or change releases.')
         publisher = info.get('publisher') or {}
         media = info.get('media') or []
         catalog_icon(item, snap_artwork_locator(info, installed))
@@ -2381,6 +2448,8 @@ def app_details(target, artwork=True):
                     publisher_verified=publisher.get('validation') == 'verified', license=info.get('license', ''),
                     homepage=info.get('website', ''), installed=bool(installed),
                     installed_version=(installed or {}).get('version', ''), confinement=info.get('confinement', 'strict'))
+        if selected:
+            item.update(version=selected['version'], confinement=selected['confinement'])
     elif target.get('catalog'):
         entry = next((e for e in appimage_feed() if isinstance(e, dict) and isinstance(e.get('name'), str)
                       and hashlib.sha256(e['name'].encode()).hexdigest() == ident), None)
@@ -2571,9 +2640,214 @@ def migrate_legacy_library():
         _MIGRATING.discard(str(root))
 
 
+def display_source(value):
+    """Hide credentials and URL parameters in source labels and review text."""
+    def scrub(match):
+        try:
+            url = urllib.parse.urlsplit(match[0])
+            host = url.hostname or ''
+            if ':' in host:
+                host = '[' + host + ']'
+            return urllib.parse.urlunsplit((url.scheme, host + (':' + str(url.port) if url.port else ''), url.path, '', ''))
+        except ValueError:
+            return '[source address]'
+    return re.sub(r'(?:https?|ftp)://[^\s]+', scrub, str(value))[:3000]
+
+
+def debian_sources():
+    result = []
+    PackageKit().transaction('GetRepoList', '(t)', (0,), on_repository=result.append)
+    return sorted(result, key=lambda r: r['id'])
+
+
+def flatpak_sources(scope):
+    _, _, installation = flatpak_api(scope)
+    installed = installation.list_installed_refs(None)
+    return [dict(id=r.get_name(), name=r.get_title() or r.get_name(), url=r.get_url() or '',
+                 enabled=not r.get_disabled(), verified=r.get_gpg_verify(), scope=scope,
+                 installed_count=sum(ref.get_origin() == r.get_name() for ref in installed))
+            for r in installation.list_remotes(None)]
+
+
+def software_sources():
+    providers, repositories = [], []
+    try:
+        rows = debian_sources()
+        repositories.extend(dict(r, source='deb', scope='system', display_name=display_source(r['name'])) for r in rows)
+        providers.append(dict(id='deb', name='Native (Debian)', installed=True, available=True))
+    except Exception as error:
+        providers.append(dict(id='deb', name='Native (Debian)', installed=True, available=False, error=display_source(error)))
+    flatpak = bool(shutil.which('flatpak'))
+    providers.append(dict(id='flatpak', name='Flatpak', installed=flatpak, available=flatpak))
+    if flatpak:
+        for scope in ('user', 'system'):
+            try:
+                repositories.extend(dict(r, source='flatpak', display_name=display_source(r['name']), display_url=display_source(r['url'])) for r in flatpak_sources(scope))
+            except Exception as error:
+                providers[-1]['error'] = display_source(error)
+                providers[-1]['available'] = False
+    snap = bool(shutil.which('snap'))
+    try:
+        info = snap_api('/v2/system-info')['result']
+        providers.append(dict(id='snap', name='Snap', installed=True, available=True, version=info.get('version', '')))
+    except AppCenterError as error:
+        providers.append(dict(id='snap', name='Snap', installed=snap, available=False, error=display_source(error)))
+    providers.append(dict(id='appimage', name='AppImage', installed=True, available=True))
+    return dict(providers=providers, repositories=repositories)
+
+
+def source_identity(target):
+    if not isinstance(target, dict) or target.get('source') not in ('deb', 'flatpak', 'snap'):
+        raise AppCenterError('Invalid software source.')
+    source, ident, scope = target['source'], target.get('id'), target.get('scope', 'system')
+    if not isinstance(ident, str) or not ident or len(ident) > 4096 or any(ord(c) < 32 for c in ident):
+        raise AppCenterError('Invalid software source identifier.')
+    if scope not in ('user', 'system') or source != 'flatpak' and scope != 'system':
+        raise AppCenterError('Invalid software source scope.')
+    if source in ('flatpak', 'snap') and not APPID.fullmatch(ident):
+        raise AppCenterError('Invalid software source name.')
+    return dict(source=source, id=ident, scope=scope)
+
+
+class RepositoryRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not public_https(newurl, resolve=True):
+            raise AppCenterError('Repository files must use public HTTPS addresses.')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def read_flatpak_repository(url):
+    if not isinstance(url, str) or len(url) > 2048 or not public_https(url, resolve=True):
+        raise AppCenterError('Enter a public HTTPS .flatpakrepo address without login credentials.')
+    request = urllib.request.Request(url, headers={'User-Agent': 'Cutefish-App-Center/0.5'})
+    try:
+        with urllib.request.build_opener(RepositoryRedirect()).open(request, timeout=25) as response:
+            data = response.read(256 * 1024 + 1)
+        if len(data) > 256 * 1024:
+            raise AppCenterError('The repository file is too large.')
+        config = configparser.ConfigParser(interpolation=None)
+        config.read_string(data.decode('utf-8'))
+        section = config['Flatpak Repo']
+        key = base64.b64decode(section['GPGKey'], validate=True)
+        if not key or len(key) > 128 * 1024 or not public_https(section['Url'], resolve=True):
+            raise AppCenterError('The repository must use public HTTPS and supply a signing key.')
+        return data, hashlib.sha256(key).hexdigest()
+    except AppCenterError:
+        raise
+    except Exception as error:
+        raise AppCenterError('Could not read the signed Flatpak repository file: ' + display_source(error)) from None
+
+
+def source_fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def plan_source(target, action):
+    identity = source_identity(target)
+    source, ident, scope = identity['source'], identity['id'], identity['scope']
+    result = dict(target=identity, action=action)
+    if source == 'deb':
+        if action not in ('enable', 'disable'):
+            raise AppCenterError('Debian repositories can be enabled or disabled here.')
+        record = next((r for r in debian_sources() if r['id'] == ident), None)
+        if record is None:
+            raise AppCenterError('This Debian repository no longer exists. Reload Software Sources.')
+        result.update(before=record, title=('Enable ' if action == 'enable' else 'Disable ') + display_source(record['name']),
+                      note='This changes the configured Debian repository for all users. Installed packages are kept. Refresh the catalog afterwards.')
+    elif source == 'flatpak':
+        records = flatpak_sources(scope)
+        record = next((r for r in records if r['id'] == ident), None)
+        if action == 'add':
+            if record:
+                raise AppCenterError('A Flatpak source with that name already exists in this scope.')
+            data, key = read_flatpak_repository(target.get('repository_url'))
+            F, GLib, _ = flatpak_api(scope)
+            remote = F.Remote.new_from_file(ident, GLib.Bytes.new(data))
+            remote.set_gpg_verify(True)
+            result['target']['repository_url'] = target['repository_url']
+            result.update(repository_data=base64.b64encode(data).decode(), signing_key_sha256=key,
+                          title='Add ' + ident, note='Add a trusted Flatpak source for ' + ('only your account.' if scope == 'user' else 'all users.') +
+                          '\nRepository: ' + display_source(remote.get_url()) + '\nSigning key SHA-256: ' + key +
+                          '\nApplications and updates from this source will be verified with this key.')
+        elif action in ('enable', 'disable', 'remove'):
+            if record is None:
+                raise AppCenterError('This Flatpak source no longer exists. Reload Software Sources.')
+            if action == 'remove' and record['installed_count']:
+                raise AppCenterError('This source provides installed applications or runtimes. Remove those installations before removing the source, or disable it instead.')
+            result.update(before=record, title=action.title() + ' ' + display_source(record['name']),
+                          note='Flatpak · ' + scope + '\nRepository: ' + display_source(record['url']) +
+                          '\nInstalled applications and their data are kept. A disabled source cannot provide new applications or updates until enabled again.')
+        else:
+            raise AppCenterError('Unsupported Flatpak source operation.')
+    elif ident == 'snap' and action == 'start':
+        provider = next(p for p in software_sources()['providers'] if p['id'] == 'snap')
+        if not provider['installed'] or provider['available']:
+            raise AppCenterError('Snap support must be installed and its service stopped before it can be started here.')
+        result.update(before=provider, title='Start Snap support', note='Start the system snapd socket. The system will request administrator authorization if required.')
+    else:
+        raise AppCenterError('Unsupported software source operation.')
+    if action in ('enable', 'disable') and bool(result['before']['enabled']) == (action == 'enable'):
+        raise AppCenterError('The source is already in the requested state. Reload Software Sources.')
+    result['fingerprint'] = source_fingerprint(result)
+    return result
+
+
+def apply_source(approved):
+    if not isinstance(approved, dict):
+        raise AppCenterError('Invalid source review.')
+    with mutation_lock():
+        current = plan_source(approved.get('target'), approved.get('action'))
+        if current['fingerprint'] != approved.get('fingerprint'):
+            raise AppCenterError('The software source changed. Review this operation again.')
+        target, action = current['target'], current['action']
+        if target['source'] == 'deb':
+            PackageKit().transaction('RepoEnable', '(sb)', (target['id'], action == 'enable'))
+            record = next((r for r in debian_sources() if r['id'] == target['id']), None)
+            if record is None or record['enabled'] != (action == 'enable'):
+                raise AppCenterError('The package service did not apply the repository change. Reload Software Sources.')
+        elif target['source'] == 'flatpak':
+            F, GLib, installation = flatpak_api(target['scope'])
+            if action == 'add':
+                remote = F.Remote.new_from_file(target['id'], GLib.Bytes.new(base64.b64decode(current['repository_data'])))
+                remote.set_gpg_verify(True)
+                installation.add_remote(remote, False, None)
+            elif action == 'remove':
+                installation.remove_remote(target['id'], None)
+            else:
+                remote = installation.get_remote_by_name(target['id'], None)
+                remote.set_disabled(action == 'disable')
+                installation.modify_remote(remote, None)
+            record = next((r for r in flatpak_sources(target['scope']) if r['id'] == target['id']), None)
+            if (action == 'remove' and record is not None or action != 'remove' and record is None or
+                    action in ('enable', 'disable') and record['enabled'] != (action == 'enable') or
+                    action == 'add' and (not record['verified'] or record['url'] != remote.get_url())):
+                raise AppCenterError('Flatpak did not apply the source change. Reload Software Sources.')
+        else:
+            from gi.repository import Gio, GLib
+            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            bus.call_sync('org.freedesktop.systemd1', '/org/freedesktop/systemd1', 'org.freedesktop.systemd1.Manager',
+                          'StartUnit', GLib.Variant('(ss)', ('snapd.socket', 'replace')), None,
+                          Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION, 120000, None)
+            for _ in range(40):
+                try:
+                    snap_api('/v2/system-info')
+                    break
+                except AppCenterError:
+                    time.sleep(.25)
+            else:
+                raise AppCenterError('The Snap service did not become available. Check its system service status.')
+        return dict(message='Software source changes completed.')
+
+
 def dispatch(request):
     migrate_legacy_library()
     op = request.get("op")
+    if op == 'sources':
+        return software_sources()
+    if op == 'plan_source':
+        return {'plan': plan_source(request.get('target'), request.get('action'))}
+    if op == 'apply_source':
+        return apply_source(request.get('plan'))
     if op == "icons":
         return list_icons(request)
     if op == 'plan_all_updates':
