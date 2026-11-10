@@ -24,5 +24,6 @@ jobs:
           python3 tests/test_catalog_icons.py -v
           python3 tests/test_packaging.py -v
           python3 tests/test_management.py -v
+          python3 tests/test_sources.py -v
       - name: Private PackageKit protocol tests
         run: dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
