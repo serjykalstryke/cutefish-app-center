@@ -1,8 +1,9 @@
 #!/usr/bin/python3
 """Unprivileged store providers. stdin request -> NDJSON progress + result.
 
-No shell, sudo, root helper or arbitrary executable from a request. Debian
-transactions belong to PackageKit and Snap transactions belong to snapd.
+No shell or arbitrary executable from a request. Package transactions belong
+to system services. A fixed, separately authorized helper switches reviewed
+Debian archive configuration; it never installs packages or accepts file paths.
 """
 from __future__ import annotations
 import base64
@@ -789,7 +790,9 @@ def snap_channels(info):
 
 def snap_items(query=None, updates=False, limit=LIMIT):
     if query is not None:
-        path = "/v2/find?" + urllib.parse.urlencode({"q": search_lookup(query)})
+        params = {"q": search_lookup(query)}
+        if catalog_releases().get("snap") == "beta":params["scope"] = "wide"
+        path = "/v2/find?" + urllib.parse.urlencode(params)
     elif updates:
         path = "/v2/find?select=refresh"
     else:
@@ -806,10 +809,11 @@ def snap_items(query=None, updates=False, limit=LIMIT):
              for x in data if query is None or x.get("type", "app") == "app"]
     items = ranked_search(items, query) if query is not None else items[:limit] if limit else items
     for item in items:
-        if item['id'] in installed_records:
+        if query is None and item['id'] in installed_records:
             item['channel'] = installed_records[item['id']].get('tracking-channel') or installed_records[item['id']].get('channel', 'stable')
         item['installed_revision'] = str(installed_records.get(item['id'], {}).get('revision', ''))
         item['installed_version'] = installed_records.get(item['id'], {}).get('version', '')
+        item['tracking_channel'] = installed_records.get(item['id'], {}).get('tracking-channel') or installed_records.get(item['id'], {}).get('channel', '')
     records = {x['name']: x for x in data}
     for item in items:
         common = records[item['id']].get('common-ids', [])
@@ -2003,6 +2007,111 @@ def apply_all_updates(approved):
                     restart=restart, restart_notice=notice)
 
 
+def catalog_releases():
+    config = Path(os.environ.get('XDG_CONFIG_HOME', ''))
+    if not config.is_absolute():
+        config = Path.home() / '.config'
+    path = Path(os.environ.get('CUTEFISH_APP_CENTER_PREFERENCES') or config / 'cutefish-app-center/preferences.json')
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            return {}
+        data = json.loads(path.read_text())
+        return {key: value for key, value in data.get('catalog_releases', {}).items()
+                if key in ('flatpak', 'snap') and value in ('stable', 'beta')} if data.get('version') == 1 else {}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return {}
+
+
+def flatpak_catalog_release(item):
+    if item.get('catalog_release') == 'beta':return 'beta'
+    words = set(re.split(r'[^a-z0-9]+', (item.get('remote', item.get('id', '')) + ' ' + item.get('branch', '')).lower()))
+    return 'beta' if words & {'beta', 'alpha', 'nightly', 'testing', 'devel', 'unstable', 'canary', 'edge', 'candidate'} else 'stable'
+
+
+def flatpak_remote_catalog_releases(scope):
+    _, _, installation = flatpak_api(scope)
+    return {r.get_name(): flatpak_catalog_release(dict(remote=r.get_name(), branch=urllib.parse.unquote(urllib.parse.urlsplit(r.get_url() or '').path))) for r in installation.list_remotes(None)}
+
+
+def flatpak_catalog_family(remote):
+    try:
+        url = urllib.parse.urlsplit(remote.get('url', ''))
+        if url.hostname in ('dl.flathub.org', 'flathub.org') and url.path.rstrip('/') in ('/repo', '/beta-repo'):
+            return 'flathub'
+    except ValueError:
+        pass
+    return ''
+
+
+SNAP_BETA_SEARCH_LIMIT = 24
+
+
+def cached_snap_channels(ident):
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]*', ident):
+        raise AppCenterError('Invalid Snap catalog identifier.')
+    path = cache_home() / 'snap-channels' / (ident + '-' + os.uname().machine + '.json')
+    try:
+        if path.stat().st_size <= 128 * 1024 and 0 <= time.time() - path.stat().st_mtime < 600:
+            value = json.loads(path.read_text())
+            if isinstance(value, list) and all(isinstance(c, dict) and c.get('channel') == snap_channel(c.get('channel')) and str(c.get('revision', '')).isdigit() for c in value):
+                return value
+    except (OSError, ValueError, TypeError, AppCenterError):
+        pass
+    records = snap_api('/v2/find?' + urllib.parse.urlencode({'name': ident}))['result']
+    info = next((r for r in records if r.get('name') == ident), {})
+    result = snap_channels(info)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_file(path, json.dumps(result).encode())
+    except OSError:
+        pass
+    return result
+
+
+def search_provider(source, query):
+    release = catalog_releases().get(source, 'stable')
+    items = inventory_provider(source, 'search', query)
+    warnings = []
+    if source == 'flatpak':
+        remote_releases = {scope: flatpak_remote_catalog_releases(scope) for scope in {i['scope'] for i in items}}
+        items = [i for i in items if flatpak_catalog_release(dict(i, catalog_release=remote_releases[i['scope']].get(i.get('remote')))) == release]
+    elif source == 'snap':
+        if release == 'stable':
+            selected = []
+            for item in items:
+                channel = snap_channel(item.get('channel', 'stable'))
+                if channel.split('/')[1] != 'stable':continue
+                selected.append(dict(item, requested_channel=channel, channel=channel,
+                                     channel_change=bool(item.get('installed') and snap_channel(item.get('tracking_channel') or 'stable') != channel)))
+            items = selected
+        else:
+            candidates, items = items[:SNAP_BETA_SEARCH_LIMIT], []
+            def selected(item):
+                channels = [c for c in cached_snap_channels(item['id']) if c['channel'].split('/')[1] == 'beta']
+                if not channels:
+                    return None
+                candidate = min(channels, key=lambda c: (c['channel'] != 'latest/beta', c['channel']))
+                return dict(item, requested_channel=candidate['channel'], channel=candidate['channel'],
+                            version=candidate['version'], revision=candidate['revision'], confinement=candidate['confinement'],
+                            channel_change=bool(item.get('installed') and snap_channel(item.get('tracking_channel') or 'stable') != candidate['channel']))
+            # Probe once before a batch so an offline/rate-limited store does not
+            # receive a full batch of doomed requests. Never substitute stable.
+            if candidates:
+                first = selected(candidates[0])
+                if first:items.append(first)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                    futures = [executor.submit(selected, i) for i in candidates[1:]]
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            candidate = future.result()
+                            if candidate:items.append(candidate)
+                        except AppCenterError as error:
+                            if not warnings:warnings.append('Snap beta availability could not be checked for some matches: ' + str(error))
+            if len(candidates) == SNAP_BETA_SEARCH_LIMIT:
+                warnings.append('Snap beta search checks the best 24 matches. Narrow your search for more specific results.')
+    return dict(items=items, warnings=warnings)
+
+
 def listing(request):
     mode = request.get("mode", "installed")
     if mode not in ("search", "installed", "updates"):
@@ -2015,11 +2124,15 @@ def listing(request):
     if mode == "search" and len(query) < 2:
         return {"items": [], "warnings": [], "message": "Type at least two characters to search your configured sources."}
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(inventory_provider, s, mode, query): s for s in sources}
+        futures = {executor.submit(search_provider, s, query) if mode == 'search' else executor.submit(inventory_provider, s, mode, query): s for s in sources}
         for future in concurrent.futures.as_completed(futures):
             source = futures[future]
             try:
-                items.extend(future.result())
+                result = future.result()
+                if mode == 'search':
+                    items.extend(result['items']);warnings.extend(result['warnings'])
+                else:
+                    items.extend(result)
             except Exception as e:
                 warnings.append(source + ": " + str(e))
     if mode == "search":
@@ -2517,12 +2630,13 @@ def discover_apps():
             wanted = {appid.casefold() for _, _, ids, _ in FEATURED_APPS for appid in ids}
             for scope in ('user', 'system'):
                 metadata = flatpak_appstream(scope, arch)
+                remote_releases = flatpak_remote_catalog_releases(scope)
                 refs = {tuple(line.split('\t')) for line in run([
                     'flatpak', '--' + scope, 'remote-ls', '--app', '--cached',
                     '--columns=application,arch,branch,origin']).splitlines()}
                 for key, meta in metadata.items():
                     appid, ref_arch, branch, remote = key
-                    if key in refs and appid.casefold() in wanted and branch == 'stable':
+                    if key in refs and appid.casefold() in wanted and flatpak_catalog_release(dict(remote=remote, branch=branch, catalog_release=remote_releases.get(remote))) == catalog_releases().get('flatpak', 'stable'):
                         candidates.append(dict(meta, source='flatpak', id=appid, scope=scope,
                                                remote=remote, arch=ref_arch, branch=branch))
         except AppCenterError as error:
@@ -2669,6 +2783,42 @@ def flatpak_sources(scope):
             for r in installation.list_remotes(None)]
 
 
+def debian_release_system():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('debian_releases', Path(__file__).with_name('debian_releases.py'))
+    module = importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module.System()
+
+
+def plan_debian_release(release):
+    try:
+        return debian_release_system().plan(release)
+    except Exception as error:
+        raise AppCenterError(str(error)) from None
+
+
+def apply_debian_release(approved):
+    if not isinstance(approved, dict):
+        raise AppCenterError('Invalid Debian release review.')
+    with mutation_lock():
+        current = plan_debian_release(approved.get('release'))
+        if current['fingerprint'] != approved.get('fingerprint'):
+            raise AppCenterError('Debian source configuration changed. Review the switch again.')
+        helper = str(Path(__file__).with_name('debian_sources_helper.py'))
+        try:
+            result = subprocess.run(['/usr/bin/pkexec', helper], input=json.dumps(dict(release=current['release'],fingerprint=current['fingerprint']))+'\n',
+                                    capture_output=True, text=True, timeout=180)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise AppCenterError('Could not complete Debian source authorization: '+str(error)) from None
+        try:
+            data = json.loads(result.stdout)
+        except ValueError:
+            raise AppCenterError('Debian source changes were not completed. Authorization may have been canceled. '+result.stderr[-1000:]) from None
+        if result.returncode or not data.get('ok'):
+            raise AppCenterError(data.get('error','Debian source changes were not completed.'))
+        return dict(message=data['message'])
+
+
 def software_sources():
     providers, repositories = [], []
     try:
@@ -2682,7 +2832,7 @@ def software_sources():
     if flatpak:
         for scope in ('user', 'system'):
             try:
-                repositories.extend(dict(r, source='flatpak', display_name=display_source(r['name']), display_url=display_source(r['url'])) for r in flatpak_sources(scope))
+                repositories.extend(dict(r, source='flatpak', catalog_family=flatpak_catalog_family(r), catalog_release=flatpak_catalog_release(dict(remote=r['id'], branch=urllib.parse.unquote(urllib.parse.urlsplit(r['url']).path))), display_name=display_source(r['name']), display_url=display_source(r['url'])) for r in flatpak_sources(scope))
             except Exception as error:
                 providers[-1]['error'] = display_source(error)
                 providers[-1]['available'] = False
@@ -2693,7 +2843,10 @@ def software_sources():
     except AppCenterError as error:
         providers.append(dict(id='snap', name='Snap', installed=snap, available=False, error=display_source(error)))
     providers.append(dict(id='appimage', name='AppImage', installed=True, available=True))
-    return dict(providers=providers, repositories=repositories)
+    release = debian_release_system().status()
+    for row in repositories:
+        if row['source'] == 'deb':row['release_managed'] = row['id'].partition(':')[0] in release.get('managed_files', [])
+    return dict(providers=providers, repositories=repositories, debian_release=release)
 
 
 def source_identity(target):
@@ -2752,6 +2905,8 @@ def plan_source(target, action):
         record = next((r for r in debian_sources() if r['id'] == ident), None)
         if record is None:
             raise AppCenterError('This Debian repository no longer exists. Reload Software Sources.')
+        if ident.partition(':')[0] in debian_release_system().status().get('managed_files', []):
+            raise AppCenterError('This entry is controlled by the Debian release selection. Use that dropdown or restore the original configuration first.')
         result.update(before=record, title=('Enable ' if action == 'enable' else 'Disable ') + display_source(record['name']),
                       note='This changes the configured Debian repository for all users. Installed packages are kept. Refresh the catalog afterwards.')
     elif source == 'flatpak':
@@ -2842,6 +2997,10 @@ def apply_source(approved):
 def dispatch(request):
     migrate_legacy_library()
     op = request.get("op")
+    if op == 'plan_debian_release':
+        return {'plan': plan_debian_release(request.get('release'))}
+    if op == 'apply_debian_release':
+        return apply_debian_release(request.get('plan'))
     if op == 'sources':
         return software_sources()
     if op == 'plan_source':
