@@ -36,6 +36,8 @@
 #include <ui/scroll_view.h>
 #include <ui/search_field.h>
 #include <ui/switch.h>
+#include <ui/segmented_control.h>
+#include <ui/text_field.h>
 #include <ui/theme.h>
 #include <ui/window.h>
 #include <ui/window_header.h>
@@ -54,7 +56,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.4.0"
+#define APP_CENTER_VERSION "0.5.0"
 #endif
 
 static J branding() {
@@ -456,7 +458,7 @@ private:
                  std::function<void(const std::string&,bool)> onError={}) {
         if(m_preview || m_busy) return;
         cancelDetails();cancelIcons();
-        if(mutating){cancelDiscover();cancelUpdateCheck();m_featuredLoaded=false;m_libraryLoaded=false;m_updatesLoaded=false;}
+        if(mutating){m_sourcesLoaded=false;cancelDiscover();cancelUpdateCheck();m_featuredLoaded=false;m_libraryLoaded=false;m_updatesLoaded=false;}
         m_debounce.stop(); busy(true,mutating);m_status->setText(mutating?"Applying software changes…":"Loading…");
         m_process=std::make_unique<base::Process>(&m_app.loop());
         m_process->setStandardInput(data.serialize()+"\n");
@@ -548,6 +550,7 @@ private:
     void reloadView() {
         if(m_busy)return;
         if(m_page=="installed"){m_updatesLoaded=false;loadLibrary(true);return;}
+        if(m_page=="settings" && m_settingsSection==1){loadSources();return;}
         cancelDiscover();m_featuredLoaded=false;refresh();
     }
     void resetPage() {
@@ -568,7 +571,7 @@ private:
         m_subtitle->setVisible(m_page!="about" && !(m_page=="discover" && m_search->text().size()<2));
         if(m_page=="files"){m_subtitle->setText("Review a .deb or AppImage before installing.");filePage();return;}
         if(m_page=="about"){aboutPage();return;}
-        if(m_page=="settings"){m_subtitle->setText("Choose how App Center selects software sources.");settingsPage();return;}
+        if(m_page=="settings"){m_subtitle->setText("Choose how software is found and managed.");settingsPage();return;}
         if(m_page=="discover" && m_search->text().size()<2){landing();loadDiscover();return;}
         m_subtitle->setText(m_page=="discover"?"Find apps across your configured software sources.":"Manage installed apps and keep all software up to date.");
         if(m_page=="installed"){
@@ -780,6 +783,10 @@ private:
     void settingsPage() {
         resetPage();
         auto* content=m_list->setContent<ui::Column>();content->setSpacing(18);content->setMargins({0,12,0,18});
+        auto* sections=content->addChild<ui::SegmentedControl>(std::vector<std::string>{"Preferences","Software Sources"});size(sections,-1,40,true);
+        sections->setCurrentIndex(m_settingsSection);
+        sections->onCurrentChanged=[this](int n){m_settingsSection=n;m_app.loop().post([this]{if(m_page=="settings")settingsPage();});};
+        if(m_settingsSection==1){sourcesPage(content);return;}
         const bool editable=!m_preview && m_preferences.error().empty();
         if(!m_preferences.error().empty()){
             auto* notice=content->addChild<Panel>(true);size(notice,-1,-1,true);
@@ -832,6 +839,108 @@ private:
             if(!m_preferences.reset(error)){message("Preferences",error);return;}
             m_sourceChoices.clear();m_app.loop().post([this]{if(m_page=="settings")settingsPage();});
         };
+    }
+
+    void loadSources() {
+        m_sourcesLoaded=false;
+        request(J::object({{"op","sources"}}),[this](const J& result){
+            m_sources=result;m_sourcesLoaded=true;
+            if(m_page=="settings")settingsPage();
+        });
+    }
+    void prepareSource(const J& target,const std::string& action) {
+        request(J::object({{"op","plan_source"},{"target",target},{"action",action}}),[this](const J& result){
+            auto plan=result["plan"];
+            m_review=std::make_unique<ui::DialogWindow>(&m_window,"Review software source",640);
+            auto* content=m_review->setContent<ui::Column>();content->setSpacing(16);content->setMargins(ui::Margins::all(20));
+            label(content,str(plan,"title"),20,650,true);
+            auto* scroll=content->addChild<ui::ScrollView>();size(scroll,-1,240,true);
+            label(scroll->setContent<ui::Column>(),str(plan,"note"),13,400,true);
+            auto* actions=content->addChild<ui::Row>();actions->setSpacing(12);actions->addStretch();
+            auto* cancel=actions->addChild<ui::Button>("Cancel");cancel->onClicked=[this]{m_review->close();};
+            auto* confirm=actions->addChild<ui::DialogButton>("Apply Source Change",true);confirm->setDestructive(str(plan,"action")=="remove");
+            confirm->onClicked=[this,plan]{m_review->close();request(J::object({{"op","apply_source"},{"plan",plan}}),[this](const J& result){
+                m_status->setText(str(result,"message"));loadSources();
+            },true);};
+            m_review->show();
+        });
+    }
+    void addFlatpakDialog() {
+        m_review=std::make_unique<ui::DialogWindow>(&m_window,"Add Flatpak Source",620);
+        auto* content=m_review->setContent<ui::Column>();content->setSpacing(14);content->setMargins(ui::Margins::all(20));
+        label(content,"Choose a signed Flatpak repository",19,650,true);
+        auto* presets=content->addChild<ui::ComboBox>(std::vector<std::string>{"Flathub (stable)","Flathub Beta","Custom source"});size(presets,-1,36,true);
+        label(content,"Source name",12,550);
+        auto* name=content->addChild<ui::TextField>("flathub");size(name,-1,36,true);name->setMaximumLength(100);name->setToolTip("Flatpak source name");
+        label(content,"Repository file address (.flatpakrepo)",12,550);
+        auto* url=content->addChild<ui::TextField>("https://flathub.org/repo/flathub.flatpakrepo");size(url,-1,36,true);url->setMaximumLength(2048);url->setToolTip("Flatpak repository file address");
+        auto* scope=content->addChild<ui::ComboBox>(std::vector<std::string>{"Only my account","All users"});size(scope,-1,36,true);
+        label(content,"Review the repository address and signing key before adding it. Beta repositories offer testing builds only where the publisher provides them.",12,400,true);
+        presets->onActivated=[name,url](int n){name->setText(n==0?"flathub":n==1?"flathub-beta":"");url->setText(n==0?"https://flathub.org/repo/flathub.flatpakrepo":n==1?"https://flathub.org/beta-repo/flathub-beta.flatpakrepo":"");};
+        auto* actions=content->addChild<ui::Row>();actions->setSpacing(12);actions->addStretch();
+        auto* cancel=actions->addChild<ui::Button>("Cancel");cancel->onClicked=[this]{m_review->close();};
+        auto* review=actions->addChild<ui::DialogButton>("Review Source",true);
+        review->onClicked=[this,name,url,scope]{
+            auto target=J::object({{"source","flatpak"},{"id",name->text()},{"repository_url",url->text()},{"scope",scope->currentIndex()==0?"user":"system"}});
+            m_review->close();prepareSource(target,"add");
+        };
+        m_review->show();
+    }
+    void sourcesPage(ui::Column* content) {
+        auto* heading=content->addChild<ui::Row>();heading->setSpacing(12);size(heading,-1,38,true);
+        size(label(heading,"Software sources",21,650),-1,-1,true);
+        auto* reload=heading->addChild<ui::Button>("Reload Sources");size(reload,150,36);reload->setEnabled(!m_preview);reload->onClicked=[this]{loadSources();};
+        if(!m_sourcesLoaded){
+            label(content,m_preview?"Software sources are available on the installed system.":"Loading configured software sources…",13,400,true);
+            if(!m_preview)m_app.loop().post([this]{if(m_page=="settings" && m_settingsSection==1 && !m_busy && !m_sourcesLoaded)loadSources();});
+            return;
+        }
+        for(const auto& provider:m_sources["providers"].toArray()){
+            const auto id=str(provider,"id");const bool installed=provider["installed"].toBool(),available=provider["available"].toBool();
+            auto* panel=content->addChild<Panel>();panel->setSpacing(12);size(panel,-1,-1,true);
+            auto* row=panel->addChild<ui::Row>();row->setSpacing(12);size(row,-1,36,true);
+            size(label(row,str(provider,"name"),18,650),-1,-1,true);
+            label(row,available?"Ready":installed?"Needs attention":"Not installed",12,550);
+            if(!str(provider,"error").empty())label(panel,str(provider,"error"),12,400,true);
+            if(!installed && (id=="flatpak" || id=="snap")){
+                auto* setup=panel->addChild<ui::Button>("Install "+str(provider,"name")+" Support");size(setup,220,36);
+                setup->onClicked=[this,id]{prepare(J::object({{"source","deb"},{"id",id=="snap"?"snapd":"flatpak"},{"name",id=="snap"?"Snap support":"Flatpak support"}}),"install");};
+            }else if(id=="snap" && !available){
+                auto* start=panel->addChild<ui::Button>("Start Snap Support");size(start,220,36);start->onClicked=[this]{prepareSource(J::object({{"source","snap"},{"id","snap"}}),"start");};
+            }
+            if(id=="deb")label(panel,"Manage configured Debian repositories. Adding or editing repository addresses and keys is handled by your distribution’s source configuration.",12,400,true);
+            if(id=="flatpak"){
+                label(panel,"Sources are separate for your account and the whole system. Disabling a source keeps its apps installed and stops updates from that source.",12,400,true);
+                auto* add=panel->addChild<ui::Button>("Add Flatpak Source…");size(add,220,36);add->setEnabled(available);add->onClicked=[this]{addFlatpakDialog();};
+            }
+            if(id=="snap")label(panel,"Snap uses the Snap Store. Choose an available track and channel on an app’s detail card. Snapd also refreshes installed snaps automatically.",12,400,true);
+            if(id=="appimage")label(panel,"The catalog links to publisher downloads. Import a downloaded AppImage with Install from File. Updates are managed by the publisher.",12,400,true);
+            bool any=false;
+            for(const auto& repo:m_sources["repositories"].toArray()){
+                if(str(repo,"source")!=id)continue;
+                any=true;
+                auto* block=panel->addChild<ui::Column>();block->setSpacing(7);block->setMargins({0,10,0,10});size(block,-1,-1,true);
+                label(block,str(repo,"display_name")+(id=="flatpak"?" · "+str(repo,"scope"):""),14,600,true);
+                if(!str(repo,"display_url").empty())label(block,str(repo,"display_url"),12,400,true);
+                const bool enabled=repo["enabled"].toBool();
+                label(block,std::string(enabled?"Enabled":"Disabled")+(id=="flatpak"?(repo["verified"].toBool()?" · Signatures verified":" · Signature verification disabled"):""),12,500,true);
+                auto* buttons=block->addChild<ui::Row>();buttons->setSpacing(10);size(buttons,-1,34,true);
+                auto target=J::object({{"source",id},{"id",repo["id"]},{"scope",repo["scope"]}});
+                auto* toggle=buttons->addChild<ui::Button>(enabled?"Disable":"Enable");size(toggle,110,32);toggle->onClicked=[this,target,enabled]{prepareSource(target,enabled?"disable":"enable");};
+                if(id=="flatpak"){
+                    auto* remove=buttons->addChild<ui::Button>("Remove Source");size(remove,150,32);remove->setEnabled(repo["installed_count"].toInt()==0);
+                    remove->setToolTip("Remove only sources with no installed apps or runtimes");remove->onClicked=[this,target]{prepareSource(target,"remove");};
+                }
+            }
+            if(!any && (id=="deb" || id=="flatpak") && available)label(panel,"No configured sources.",12,400,true);
+        }
+        auto* catalogs=content->addChild<Panel>();size(catalogs,-1,-1,true);label(catalogs,"Catalog metadata",17,650,true);
+        label(catalogs,"Refresh after changing sources to load available applications and versions.",12,400,true);
+        auto* row=catalogs->addChild<ui::Row>();row->setSpacing(12);size(row,-1,36,true);
+        for(auto provider:{std::string("Debian"),std::string("Flatpak")}){
+            auto* b=row->addChild<ui::Button>("Refresh "+provider+" Catalog");size(b,225,36);
+            b->onClicked=[this,provider]{request(J::object({{"op",provider=="Debian"?"refresh":"refresh_flatpak"}}),[this](const J& r){m_status->setText(str(r,"message"));loadSources();},true);};
+        }
     }
     void filePage() {
         resetPage();
@@ -1146,6 +1255,24 @@ private:
                 m_app.loop().post([this]{details(preferredVariant(m_variants,m_preferences));});
             };
         } else label(panel,sourceName(item),13,550,true);
+        if(str(item,"source")=="snap" && item["channel_options"].size()){
+            label(panel,"Release channel",11,650);
+            std::vector<std::string> options;int selected=0;
+            for(const auto& c:item["channel_options"].toArray()){
+                if(str(c,"channel")==str(item,"requested_channel"))selected=int(options.size());
+                options.push_back(str(c,"channel")+" · "+str(c,"version"));
+            }
+            if(item["channel_unavailable"].toBool()){selected=int(options.size());options.push_back(str(item,"requested_channel")+" · Unavailable");}
+            auto* channel=panel->addChild<ui::ComboBox>(options);size(channel,-1,36,true);channel->setCurrentIndex(selected);channel->setToolTip("Choose a published Snap track and release channel");
+            channel->onActivated=[this,index](int n){
+                if(n<0 || size_t(n)>=m_variants[index]["channel_options"].size())return;
+                auto choice=str(m_variants[index]["channel_options"][n],"channel");
+                m_variants[index].insert("requested_channel",choice);m_variants[index].insert("details_loaded",false);
+                m_app.loop().post([this,index]{details(index);});
+            };
+            if(!str(item,"tracking_channel").empty())label(panel,"Currently tracking "+str(item,"tracking_channel"),12,500,true);
+            label(panel,"Changing the selection prepares a review. Installed snaps follow the chosen channel for future refreshes.",12,400,true);
+        }
         if(item["catalog"].toBool()) {
             auto* download=panel->addChild<ui::DialogButton>("Open download page…",true);size(download,-1,40,true);download->setEnabled(!m_preview);
             download->onClicked=[this,item]{request(J::object({{"op","catalog_link"},{"target",item}}),[this](const J& result){openWebsite(str(result,"url"));});};
@@ -1156,11 +1283,11 @@ private:
                 auto* open=actions->addChild<ui::DialogButton>("Open",true);size(open,-1,40,true);open->setEnabled(!m_preview);open->onClicked=[this,item]{launchApp(item);};
             }
             bool installed=item["installed"].toBool();
-            std::string action=installed?(item["update_available"].toBool()?"update":"remove"):"install";
-            std::string text=action=="remove"?"Remove":action=="update"?"Update":str(item,"source")=="appimage"?"Import AppImage":"Install";
+            std::string action=item["channel_change"].toBool()?"switch-channel":installed?(item["update_available"].toBool()?"update":"remove"):"install";
+            std::string text=action=="switch-channel"?"Change Channel":action=="remove"?"Remove":action=="update"?"Update":str(item,"source")=="appimage"?"Import AppImage":"Install";
             auto* button=actions->addChild<ui::DialogButton>(text,!item["can_open"].toBool());size(button,-1,40,true);
-            button->setDestructive(action=="remove");button->setEnabled(!m_preview && !(action=="remove" && (item["protected"].toBool() || str(item,"ref_kind")=="runtime")) && !(action=="update" && item["update_blocked"].toBool()));button->onClicked=[this,item,action]{prepare(item,action);};
-            if(installed && action=="update"){
+            button->setDestructive(action=="remove");button->setEnabled(!m_preview && !((action=="install" || action=="switch-channel") && item["channel_unavailable"].toBool()) && !(action=="remove" && (item["protected"].toBool() || str(item,"ref_kind")=="runtime")) && !(action=="update" && item["update_blocked"].toBool()));button->onClicked=[this,item,action]{prepare(item,action);};
+            if(installed && (action=="update" || action=="switch-channel")){
                 auto* remove=actions->addChild<ui::Button>("Remove");size(remove,-1,40,true);remove->setEnabled(!m_preview && !item["protected"].toBool() && str(item,"ref_kind")!="runtime");
                 remove->onClicked=[this,item]{prepare(item,"remove");};
             }
@@ -1204,7 +1331,7 @@ private:
             auto* actions=content->addChild<ui::Row>();actions->setSpacing(12);actions->addStretch();
             auto* cancel=actions->addChild<ui::Button>("Cancel");cancel->onClicked=[this]{m_review->close();};
             auto action=str(plan,"action");
-            auto* confirm=actions->addChild<ui::DialogButton>(action=="remove"?"Remove":action=="update"?"Update":"Install",true);
+            auto* confirm=actions->addChild<ui::DialogButton>(action=="remove"?"Remove":action=="update"?"Update":action=="switch-channel"?"Change Channel":"Install",true);
             confirm->setDestructive(action=="remove");
             confirm->onClicked=[this,plan]{
                 m_review->close();
@@ -1220,6 +1347,7 @@ private:
     }
     ui::Application& m_app;
     Preferences m_preferences;
+    int m_settingsSection=0;bool m_sourcesLoaded=false;J m_sources;
     bool m_preview=false,m_busy=false,m_mutating=false;
     std::string m_mode="search",m_page="discover",m_buffer,m_displayName,m_author,m_brandIcon,m_distribution,m_projectUrl,m_reviewedFile;
     std::string m_browseTitle,m_browseQuery;
