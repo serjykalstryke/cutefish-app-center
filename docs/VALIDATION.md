@@ -302,3 +302,41 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
 - This milestone implements settings and source selection. It does not install
   providers, edit repositories, select new channels, enable background services
   or change system update schedules. Those remain separate milestones.
+
+## 0.5.0 Source management and Snap channels — November 10, 2026
+
+- All 169 Python checks and eight native checks pass. The added private
+  PackageKit protocol check lists exact repository IDs, disables/enables a
+  repository, verifies the saved result, and rejects a duplicate/stale review.
+- Source checks cover invalid identifiers/scopes, independent provider failures,
+  credential redaction, remotes used by installed apps/runtimes, authorization
+  denial, no-op or changed source state, unsigned/private/oversized repository
+  files, changed repository contents and explicit signature verification.
+- Snap tests cover published tracks/channels, exact revision/confinement review,
+  install and refresh requests, installed tracking-channel precedence, missing
+  channels, new revisions, changed installed state, devmode refusal and verified
+  postconditions. Native controls exercise a beta-source preset, review-before-
+  mutation, account scope, missing Snap setup and an exact Snap channel review.
+- Light and dark source pages were rendered and visually inspected. All earlier
+  preference persistence, catalog, search, artwork, management and details checks
+  continue to pass. The Settings test lays out the new tab strip before scrolling
+  to Restore Defaults; assertions remain enabled in Release builds.
+- A disposable Debian 13 VM exercised real PackageKit APT repository disable and
+  re-enable, real user libflatpak remote disable/re-enable, protection of a remote
+  with an installed runtime, signed public Flathub source addition with GPG
+  verification enabled, and removal of the unused test source. Real systemd
+  socket activation restored a stopped snapd and its API became available.
+  PackageKit authorization failure was observed without a graphical agent;
+  successful APT mutations and systemd activation were separately tested as the
+  VM administrator. This does not claim a live graphical authorization test of
+  each source operation.
+- Read-only source inventory was collected through Cutefish Terminal on David’s
+  desktop: all four providers available and 16 configured repositories. No host
+  repository or service was changed for testing. The live Snap Store channel
+  lookup in the VM returned “too many requests”; actual channel switching through
+  the remote store was not exercised. Exact channel transaction behavior is
+  covered by deterministic API and native fixtures.
+- The 0.5.0 Release package passes shared runtime and unresolved-symbol checks.
+  Background monitoring, panel integration, automatic installation policy, Debian
+  source-address/key editing and repository-authentication flows remain outside
+  this milestone.
