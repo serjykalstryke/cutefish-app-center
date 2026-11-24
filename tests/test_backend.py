@@ -261,4 +261,68 @@ class BackendTests(unittest.TestCase):
             b.apply(b.plan(b.inspect_local(str(archive)),'install'))
         self.assertEqual(b.appimage_items()[0]['icon'],'application-x-executable')
 
+class ScheduledUpdateCheckTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.preferences = root / 'preferences.json'
+        env = patch.dict(os.environ, XDG_DATA_HOME=str(root / 'data'),
+                         CUTEFISH_APP_CENTER_PREFERENCES=str(self.preferences))
+        env.start()
+        self.addCleanup(env.stop)
+
+    def set_interval(self, interval):
+        self.preferences.write_text(json.dumps(dict(version=1, update_check_interval=interval)))
+
+    def test_off_or_bad_preference_skips_every_provider_and_writes_nothing(self):
+        with patch.object(b, 'management_inventory') as inventory:
+            self.assertIsNone(b.check_for_updates(scheduled=True))
+            for value in ('off', {}, 'unexpected'):
+                self.set_interval(value)
+                self.assertIsNone(b.check_for_updates(scheduled=True))
+            inventory.assert_not_called()
+        self.assertEqual(b.dispatch({'op': 'update_check_status'}), {})
+        self.assertFalse(b.update_check_path().parent.exists())
+
+    def test_check_uses_no_interaction_and_waits_for_the_configured_interval(self):
+        self.set_interval('weekly')
+        inventory_data = dict(items=[], warnings=[], complete=True, update_count=4)
+        with patch.object(b, 'management_inventory', return_value=inventory_data) as inventory:
+            with patch.object(b.time, 'time', return_value=1_000_000):
+                self.assertEqual(b.check_for_updates(scheduled=True), inventory_data)
+            inventory.assert_called_once_with({'refresh': True}, updates=True, interactive=False)
+            self.assertEqual(b.update_check_path().stat().st_mode & 0o777, 0o600)
+            self.assertEqual(b.update_check_status()['update_count'], 4)
+            with patch.object(b.time, 'time', return_value=1_000_000 + 6 * 86400):
+                self.assertIsNone(b.check_for_updates(scheduled=True))
+            with patch.object(b.time, 'time', return_value=1_000_000 + 7 * 86400):
+                self.assertEqual(b.check_for_updates(scheduled=True), inventory_data)
+            self.assertEqual(inventory.call_count, 2)
+
+    def test_foreground_refresh_records_partial_results_and_scheduled_check_skips_busy_lock(self):
+        self.set_interval('daily')
+        candidate = dict(id='demo', install_key='deb:demo:amd64', source='deb', name='Demo',
+                         update_available=True, package_id='demo;2;amd64;fixture')
+        inventory_data = dict(items=[candidate], warnings=['flatpak: offline'], complete=False, update_count=2)
+        with patch.object(b, 'management_inventory', return_value=inventory_data) as inventory:
+            b.dispatch({'op': 'update_inventory', 'refresh': True})
+            inventory.assert_called_once_with({'refresh': True}, updates=True, interactive=True)
+            self.assertFalse(b.update_check_status()['complete'])
+            self.assertEqual(b.update_check_status()['warnings'], ['flatpak: offline'])
+            self.assertNotIn('items', b.update_check_status())
+            self.assertEqual(b.read_update_check()['items'], [{key: value for key, value in candidate.items()
+                                                              if key != 'package_id'}])
+            with b.mutation_lock():
+                b.invalidate_update_check()
+                self.assertIsNone(b.check_for_updates(scheduled=True))
+            self.assertEqual(b.update_check_status()['update_count'], 0)
+            self.assertTrue(b.update_check_status()['needs_check'])
+            self.assertEqual(b.read_update_check()['items'], [])
+            self.assertEqual(inventory.call_count, 1)
+            b.check_for_updates(scheduled=True)
+            self.assertEqual(inventory.call_count, 2)
+            self.assertNotIn('needs_check', b.update_check_status())
+
+
 if __name__=='__main__':unittest.main()

@@ -22,7 +22,7 @@ Plans bind targets, operations, changes and permission notes with a fingerprint.
 1. Disposable Debian/Flatpak/Snap transaction tests: install, upgrade, remove, missing dependencies, package lock contention, failed downloads, authentication denial, held packages and restart requirements.
 2. Refine application classification and cross-source identity mapping against more distributions and catalogs.
 3. Extend libflatpak transactions to installs/removals, permission previews, cancellation and interactive authentication.
-4. Add persistent transaction records, source settings and AppImage direct-download support with signature/hash verification and publisher update metadata.
+4. Add AppImage direct-download support with signature/hash verification and publisher update metadata.
 5. Integrate localization, accessibility review, keyboard/focus testing and CI against a pinned toolkit version.
 
 ## Reference APIs
@@ -193,6 +193,29 @@ Repository entries at the installed version are treated as replacement builds
 for reinstall rather than upgrades. A valid review must contain changes, and
 the installed package must reach the reviewed version before the app reports
 success. Both single updates and Update All use these checks.
+
+## Background update checks and recovery
+
+Cutefish starts `update_indicator.py` via XDG autostart. It registers a
+StatusNotifierItem when the latest enabled check found eligible updates. Clicks
+launch the desktop entry's Updates action. The installer uses Cutefish's
+existing tray support.
+
+The monitor invokes the backend's `--check-updates` entry point when scheduled.
+This path uses the existing Debian, Flatpak and Snap inventory, opts out of
+interactive authorization and shares the software transaction lock. The backend
+atomically replaces the per-user `update-check.json` after each scheduled or
+explicit refresh. Its bounded display snapshot fills the first frame when the
+tray opens the updates page. A live inventory supplies the current rows and
+transaction targets. Package and source changes invalidate the snapshot and the
+displayed count until the next check.
+
+The per-user `update-history.json` records individual updates and Update All,
+including checkpoints before provider changes. Both files live under
+`$XDG_DATA_HOME/cutefish-app-center` (default `~/.local/share/cutefish-app-center`).
+The history marks an unfinished record interrupted when the prior transaction
+lock is gone. An external package service can finish after a client interruption,
+so recovery starts by checking the current inventory and reviewing a new plan.
 
 ## Catalog release policy and Debian source helper
 

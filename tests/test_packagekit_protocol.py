@@ -42,5 +42,9 @@ class ProtocolTest(unittest.TestCase):
   self.assertTrue(b.debian_sources()[0]['enabled'])
  def test_errors_reach_the_caller(self):
   with self.assertRaisesRegex(b.AppCenterError,'Fixture error'):b.PackageKit().transaction('GetUpdates','(t)',(0,))
+ def test_scheduled_refresh_requests_no_interaction(self):
+  pk=b.PackageKit(interactive=False)
+  self.assertEqual(pk.call_flags,pk.Gio.DBusCallFlags.NONE)
+  self.assertEqual(pk.transaction('RefreshCache','(b)',(True,)),([],[]))
 
 if __name__=='__main__':unittest.main()

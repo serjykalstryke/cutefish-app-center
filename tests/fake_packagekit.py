@@ -13,6 +13,7 @@ TX='''<node><interface name="org.freedesktop.PackageKit.Transaction">
 <method name="RepoEnable"><arg type="s" direction="in"/><arg type="b" direction="in"/></method>
 <signal name="RepoDetail"><arg type="s"/><arg type="s"/><arg type="b"/></signal>
 <method name="GetUpdates"><arg type="t" direction="in"/></method>
+<method name="RefreshCache"><arg type="b" direction="in"/></method>
 <method name="UpdatePackages"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
 <method name="InstallPackages"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
 <method name="RemovePackages"><arg type="t" direction="in"/><arg type="as" direction="in"/><arg type="b" direction="in"/><arg type="b" direction="in"/></method>
@@ -25,6 +26,7 @@ TX='''<node><interface name="org.freedesktop.PackageKit.Transaction">
 bus=Gio.bus_get_sync(Gio.BusType.SESSION,None)
 count=0
 repo_enabled=True
+hints_by_path={}
 loop=GLib.MainLoop()
 def method(conn,sender,path,iface,method,args,invocation):
  global count,repo_enabled
@@ -32,7 +34,9 @@ def method(conn,sender,path,iface,method,args,invocation):
   count+=1;path=ROOT+'/t'+str(count)
   bus.register_object(path,Gio.DBusNodeInfo.new_for_xml(TX).interfaces[0],globals()['method'],None,None)
   invocation.return_value(GLib.Variant('(o)',(path,)))
- elif method=='SetHints':invocation.return_value(None)
+ elif method=='SetHints':
+  hints_by_path[path]=args.unpack()[0]
+  invocation.return_value(None)
  else:
   reporting=method=='UpdatePackages' and not args.unpack()[0] & 4
   def status(value,percent):
@@ -63,6 +67,9 @@ def method(conn,sender,path,iface,method,args,invocation):
      bus.emit_signal(sender,path,IFACE,'ErrorCode',GLib.Variant('(us)',(1,'Unknown repository')))
    elif method=='GetUpdates':
     bus.emit_signal(sender,path,IFACE,'ErrorCode',GLib.Variant('(us)',(1,'Fixture error')))
+   elif method=='RefreshCache':
+    if hints_by_path.get(path)!=['interactive=false','background=true']:
+     bus.emit_signal(sender,path,IFACE,'ErrorCode',GLib.Variant('(us)',(1,'Refresh should be non-interactive')))
    else:
     flags=args.unpack()[0]
     if flags & 4:

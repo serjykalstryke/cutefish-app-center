@@ -19,13 +19,38 @@ static void click(ui::Window& window,ui::View* view){
 static ui::ComboBox* combo(ui::View* root,const std::string& first){return findView<ui::ComboBox>(root,[&](auto* c){return !c->items().empty() && c->items()[0]==first;});}
 static void choose(ui::ComboBox* c,int n){assert(c);c->setCurrentIndex(n);c->onActivated(n);}
 static AppRow* row(ui::View* root,const std::string& name){return findView<AppRow>(root,[&](auto* r){return text(r,name);});}
+static void seedUpdateSnapshot(const std::filesystem::path& fixture){
+ auto data=fixture/"data";
+ auto state=data/"cutefish-app-center";
+ std::filesystem::create_directories(state);
+ setenv("XDG_DATA_HOME",data.c_str(),1);
+ std::ofstream snapshot(state/"update-check.json");
+ snapshot<<R"({"version":1,"checked_at":1760000000,"complete":true,"update_count":1,"warnings":[],"items":[{"id":"cached","install_key":"deb-cached","source":"deb","name":"Cached Browser","icon":"application-x-executable","installed":true,"installed_version":"1.0","update_version":"2.0","is_application":true,"update_available":true}]})";
+}
 int main(int argc,char** argv){
     isolatePreferences("native_management");
  bool live=argc>1 && std::string(argv[1])=="--live";
  auto fixture=std::filesystem::absolute("work/management-fixture");std::filesystem::create_directories(fixture);std::filesystem::create_directories("outputs");
- if(!live){auto provider=(std::filesystem::path(__FILE__).parent_path()/"management_fixture.py").string();setenv("CUTEFISH_APP_CENTER_BACKEND",provider.c_str(),1);setenv("APP_CENTER_MANAGEMENT_FIXTURE_DIR",fixture.c_str(),1);for(auto f:{"updated","apply.json","fail-source","partial"})std::filesystem::remove(fixture/f);}
- ui::Application app(argc,argv,ui::Application::Platform::Headless);AppCenter center(app,false);center.show();auto& window=center.window();window.grab();click(window,text(window.contentView(),"Installed"));
- base::Timer poll(&app.loop());int stage=0,ticks=0;bool sawAuth=false,sawDownload=false;
+ if(!live){auto provider=(std::filesystem::path(__FILE__).parent_path()/"management_fixture.py").string();setenv("CUTEFISH_APP_CENTER_BACKEND",provider.c_str(),1);setenv("APP_CENTER_MANAGEMENT_FIXTURE_DIR",fixture.c_str(),1);for(auto f:{"updated","apply.json","fail-source","partial","check.json","history.json"})std::filesystem::remove(fixture/f);seedUpdateSnapshot(fixture);}
+ ui::Application app(argc,argv,ui::Application::Platform::Headless);AppCenter center(app,false,!live);auto& window=center.window();
+ if(!live){
+  auto* root=window.contentView();
+  assert(text(root,"Installed"));assert(!text(root,"App Catalog"));
+  assert(combo(root,"All installed")->currentIndex()==1);
+  assert(contains(root,"Verifying updates") && contains(root,"Last checked"));
+  assert(row(root,"Cached Browser"));
+ }
+ center.show();window.grab();
+ if(!live){
+  auto* root=window.contentView();
+  auto* all=findView<ui::DialogButton>(root,[](auto* b){return contains(b,"Update All");});
+  assert(row(root,"Cached Browser"));assert(!row(root,"Zulu"));
+  assert(all && !all->isEnabled());
+  assert(!findView<ui::DialogButton>(root,[](auto* b){return text(b,"Update");}));
+  assert(window.grab().savePng((fixture/"startup-updates.png").string()));
+ }
+ if(live)click(window,text(window.contentView(),"Installed"));
+ base::Timer poll(&app.loop());int stage=-1,ticks=0;bool sawAuth=false,sawDownload=false;
  poll.onTimeout=[&]{
   if(++ticks>450){std::cerr<<"Timed out at management stage "<<stage<<"\n";app.quit(1);return;}
   window.grab();auto* root=window.contentView();
@@ -36,7 +61,13 @@ int main(int argc,char** argv){
     choose(combo(root,"Applications"),1);window.grab();assert(window.grab().savePng("outputs/app-center-all-software.png"));std::cout<<"Live unified installed list, application filter and update summary rendered.\n";app.quit();
    }return;
   }
-  if(stage==0 && all && all->isEnabled() && row(root,"Zulu")){
+  if(stage==-1 && all && all->isEnabled() && row(root,"libc6") && contains(root,"Last checked")){
+   assert(combo(root,"All installed")->currentIndex()==1);
+   assert(combo(root,"Applications")->currentIndex()==1);
+   assert(!row(root,"Cached Browser"));
+   assert(!row(root,"Alpha"));assert(!row(root,"Portable"));
+   choose(combo(root,"Applications"),0);choose(combo(root,"All installed"),0);stage=0;
+  }else if(stage==0 && all && all->isEnabled() && row(root,"Zulu")){
    assert(!text(root,"Updates"));assert(text(all,"Update All (6)"));assert(!row(root,"libc6"));assert(!row(root,"Core 24"));assert(row(root,"Portable"));
    assert(row(root,"Zulu")->mapToWindow({0,0}).y<row(root,"Alpha")->mapToWindow({0,0}).y);
    assert(contains(root,"3 applications · 3 system components"));
@@ -88,11 +119,24 @@ int main(int argc,char** argv){
     assert(dialog->grab().savePng("work/management-fixture/update-result.png"));
     click(*dialog,text(content,"Close"));stage=12;break;
    }
-  }else if(stage==12 && all && all->isEnabled()){
-   std::ofstream(fixture/"fail-source")<<"offline";click(window,text(root,"Check for Updates"));stage=13;
-  }else if(stage==13 && contains(root,"Some update sources are unavailable")){
+  }else if(stage==12 && all && all->isEnabled() && contains(root,"Software changed since this check")){
+   std::filesystem::remove(fixture/"check.json");
+   std::ofstream(fixture/"fail-source")<<"offline";click(window,text(root,"Update History"));stage=13;
+  }else if(stage==13){
+   for(auto* dialog:app.windows())if(dialog!=&window && contains(dialog->contentView(),"Partially completed")){
+    auto* content=dialog->contentView();
+    assert(contains(content,"Completed: Debian system."));
+    assert(contains(content,"Authentication was cancelled."));
+    assert(contains(content,"Not attempted: Snap system."));
+    assert(contains(content,"A system restart is required."));
+    assert(dialog->grab().savePng("work/management-fixture/update-history.png"));
+    click(*dialog,text(content,"Check for Updates"));stage=14;break;
+   }
+  }else if(stage==14 && contains(root,"Some update sources are unavailable") && contains(root,"Some sources could not be checked")){
    assert(row(root,"Zulu"));assert(all && !all->isEnabled());assert(contains(root,"Source unavailable"));
-   std::cout<<"Unified management, authentication and progress, close protection, partial completion and restart passed.\n";app.quit();
+   assert(combo(root,"All installed")->currentIndex()==1);assert(combo(root,"Applications")->currentIndex()==1);
+   assert(std::filesystem::exists(fixture/"check.json"));
+   std::cout<<"Cached first frame, live update verification, last-check status, history recovery, authentication and progress, close protection, partial completion and restart passed.\n";app.quit();
   }
  };
  poll.start(100ms);return app.run();

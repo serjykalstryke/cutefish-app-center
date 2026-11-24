@@ -12,9 +12,15 @@
 #include <vector>
 #include <cstdlib>
 #include <cctype>
+#include <cerrno>
+#include <ctime>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <base/event_loop.h>
 #include <base/json.h>
+#include <base/paths.h>
 #include <base/process.h>
 #include <base/timer.h>
 #include <base/url.h>
@@ -56,7 +62,7 @@ using namespace std::chrono_literals;
 #define APP_CENTER_BRANDING_FILE "/usr/share/cutefish-app-center/branding.json"
 #endif
 #ifndef APP_CENTER_VERSION
-#define APP_CENTER_VERSION "0.6.1"
+#define APP_CENTER_VERSION "0.7.0"
 #endif
 
 static J branding() {
@@ -82,6 +88,62 @@ static ui::Label* label(ui::View* p, const std::string& text, double font=13, in
     return l;
 }
 static std::string str(const J& v, std::string_view key) { return v[key].toString(); }
+static J backendResult(const std::string& output) {
+    J result;
+    size_t pos=0;
+    while(pos<output.size()){
+        auto end=output.find('\n',pos);
+        if(end==std::string::npos)end=output.size();
+        auto value=J::parse(output.substr(pos,end-pos));
+        if(value && str(*value,"event")=="result")result=*value;
+        pos=end+1;
+    }
+    return result;
+}
+static std::string updateTime(const J& value) {
+    const auto seconds=value.toDouble();
+    if(!(seconds>0 && seconds<253402300800.))return {};
+    const auto time=static_cast<std::time_t>(seconds);
+    std::tm local{};
+    char display[80];
+    if(!localtime_r(&time,&local) || !std::strftime(display,sizeof(display),"%b %d, %Y at %H:%M",&local))return {};
+    return display;
+}
+static J readUpdateSnapshot() {
+    std::filesystem::path data=base::paths::dataHome();
+    if(const char* path=std::getenv("XDG_DATA_HOME");path && std::filesystem::path(path).is_absolute())data=path;
+    const auto path=data/"cutefish-app-center/update-check.json";
+    const int fd=::open(path.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
+    if(fd<0)return {};
+
+    std::string bytes;
+    struct stat info{};
+    if(::fstat(fd,&info)==0 && S_ISREG(info.st_mode) && info.st_size>0 && info.st_size<=512*1024){
+        bytes.resize(static_cast<size_t>(info.st_size));
+        size_t offset=0;
+        while(offset<bytes.size()){
+            const auto size=::read(fd,bytes.data()+offset,bytes.size()-offset);
+            if(size<0 && errno==EINTR)continue;
+            if(size<=0)break;
+            offset+=static_cast<size_t>(size);
+        }
+        if(offset!=bytes.size())bytes.clear();
+    }
+    ::close(fd);
+    if(bytes.empty())return {};
+    auto record=J::parse(bytes);
+    if(!record || (*record)["version"].toDouble()!=1 || !(*record)["complete"].isBool()
+       || (*record)["needs_check"].toBool() || updateTime((*record)["checked_at"]).empty())return {};
+    return *record;
+}
+static std::string updateHistoryStatus(std::string_view status) {
+    if(status=="running")return "In progress";
+    if(status=="interrupted")return "Interrupted";
+    if(status=="completed")return "Completed";
+    if(status=="partial")return "Partially completed";
+    if(status=="failed")return "Failed";
+    return "Outcome unknown";
+}
 static std::string sourceName(const J& item) {
     auto s=str(item,"source");
     if(s=="deb") return "Debian · system";
@@ -180,7 +242,10 @@ public:
         const bool hasErrors=result["errors"].size()>0;
         m_heading->setText(hasErrors?"Updates need attention":"Updates completed");
         m_summary->setText(completionCount()+(hasErrors?". Check for updates before retrying.":"."));
-        finishWithNotice(str(result,"restart_notice"));
+        auto notice=str(result,"restart_notice");
+        const auto historyWarning=str(result,"history_warning");
+        if(!historyWarning.empty())notice+=(notice.empty()?"":"\n")+historyWarning;
+        finishWithNotice(notice);
     }
 
     void fail(const std::string& error,bool reported) {
@@ -343,7 +408,7 @@ private:bool m_active=false;
 
 class AppCenter {
 public:
-    AppCenter(ui::Application& app, bool preview): m_app(app), m_preview(preview), m_debounce(&app.loop()), m_iconDebounce(&app.loop()) {
+    AppCenter(ui::Application& app, bool preview, bool startOnUpdates=false): m_app(app), m_preview(preview), m_debounce(&app.loop()), m_iconDebounce(&app.loop()) {
         registerInterfaceIcons();
         m_sourceChoices=m_preferences.choices();
         auto brand=branding();
@@ -402,11 +467,16 @@ public:
         m_reload=controls->addChild<ui::Button>("Reload"); m_reload->onClicked=[this]{reloadView();};
         m_managementControls=main->addChild<ui::Column>();m_managementControls->setSpacing(10);size(m_managementControls,-1,-1,true);
         m_updateSummary=label(m_managementControls,"Checking for updates…",13,550,true);
+        m_lastUpdateCheck=label(m_managementControls,"",11,400,true);
+        m_lastUpdateCheck->setColor(ui::ColorId::DisabledText);
+        m_lastUpdateCheck->setVisible(false);
         auto* management=m_managementControls->addChild<ui::Row>();management->setSpacing(10);size(management,-1,36,true);
         m_softwareView=management->addChild<ui::ComboBox>(std::vector<std::string>{"Applications","All software"});m_softwareView->setCurrentIndex(0);size(m_softwareView,160,36);
         m_softwareView->onActivated=[this](int){showLibrary();};
         m_updateFilter=management->addChild<ui::ComboBox>(std::vector<std::string>{"All installed","Updates only"});m_updateFilter->setCurrentIndex(0);size(m_updateFilter,150,36);
         m_updateFilter->onActivated=[this](int){showLibrary();};management->addStretch();
+        m_updateHistory=management->addChild<ui::Button>("Update History");size(m_updateHistory,126,36);
+        m_updateHistory->onClicked=[this]{showUpdateHistory();};m_updateHistory->setEnabled(!m_preview);
         m_updateAll=management->addChild<ui::DialogButton>("Update All",true);m_updateAll->setEnabled(false);m_updateAll->onClicked=[this]{prepareAllUpdates();};
         auto* workspace=main->addChild<ui::Row>(); workspace->setSpacing(18); size(workspace,-1,-1,true,true);
         m_list=workspace->addChild<ui::ScrollView>(); size(m_list,-1,-1,true,true);
@@ -426,16 +496,21 @@ public:
         m_iconDebounce.setSingleShot(true);m_iconDebounce.onTimeout=[this]{loadVisibleIcons();};
         m_window.setContentView(std::move(drop));
         setupMenu();
-        navigate("discover");
+        if(startOnUpdates){
+            if(!m_preview)loadStartupUpdates();
+            openUpdates();
+        }
+        else navigate("discover");
         if(m_preview) {
             m_featured=J::Array{
                 J::object({{"source","flatpak"},{"remote","flathub"},{"scope","system"},{"feature_name","Firefox"},{"name","Firefox"},{"query","firefox"},{"summary","Browse the web with a fast, private browser."},{"icon","firefox"}}),
                 J::object({{"source","deb"},{"scope","system"},{"feature_name","LibreOffice"},{"name","LibreOffice"},{"query","libreoffice"},{"summary","Documents, spreadsheets and presentations."},{"icon","libreoffice-startcenter"}}),
                 J::object({{"source","flatpak"},{"remote","flathub"},{"scope","system"},{"feature_name","VLC"},{"name","VLC"},{"query","vlc"},{"summary","Play your music and videos."},{"icon","vlc"}})};
-            m_featuredLoaded=true;landing();
+            m_featuredLoaded=true;
+            if(!startOnUpdates)landing();
         }
     }
-    ~AppCenter(){cancelDetails();cancelDiscover();cancelIcons();cancelUpdateCheck();m_app.setMainMenu(nullptr);}
+    ~AppCenter(){cancelDetails();cancelDiscover();cancelIcons();cancelUpdateCheck();cancelUpdateCheckStatus();m_app.setMainMenu(nullptr);}
     void show(){m_window.show();}
     ui::Window& window(){return m_window;}
     void open(const std::string& path){inspect(path);}
@@ -449,9 +524,10 @@ private:
         m_refresh->setEnabled(!value);m_flatpakRefresh->setEnabled(!value);
         if(value)m_footer->setVisible(true);
         m_softwareView->setEnabled(!value);m_updateFilter->setEnabled(!value);
+        m_updateHistory->setEnabled(!value && !m_preview);
         m_updateAll->setEnabled(!value && m_updatesLoaded && m_updatesComplete && m_updateCount>0);
         if(!value && m_libraryRenderPending){m_libraryRenderPending=false;m_app.loop().post([this]{if(!m_busy && m_page=="installed")showLibrary();});}
-        m_list->setEnabled(!value);
+        m_list->setEnabled(!value || m_showingCachedUpdates);
         m_detail->setEnabled(!value);
     }
     void request(const J& data, std::function<void(const J&)> done, bool mutating=false,
@@ -459,7 +535,10 @@ private:
                  std::function<void(const std::string&,bool)> onError={}) {
         if(m_preview || m_busy) return;
         cancelDetails();cancelIcons();
-        if(mutating){m_sourcesLoaded=false;cancelDiscover();cancelUpdateCheck();m_featuredLoaded=false;m_libraryLoaded=false;m_updatesLoaded=false;}
+        if(mutating){
+            m_sourcesLoaded=false;cancelDiscover();cancelUpdateCheck();m_featuredLoaded=false;m_libraryLoaded=false;m_updatesLoaded=false;
+            discardStartupUpdates();
+        }
         m_debounce.stop(); busy(true,mutating);m_status->setText(mutating?"Applying software changes…":"Loading…");
         m_process=std::make_unique<base::Process>(&m_app.loop());
         m_process->setStandardInput(data.serialize()+"\n");
@@ -486,14 +565,7 @@ private:
             std::string errors=m_process->standardError();
             m_app.loop().post([this,output,errors,done,onError] {
                 m_process.reset(); busy(false);
-                J result;
-                size_t pos=0;
-                while(pos<output.size()) {
-                    auto end=output.find('\n',pos); if(end==std::string::npos)end=output.size();
-                    auto value=J::parse(output.substr(pos,end-pos));
-                    if(value && str(*value,"event")=="result")result=*value;
-                    pos=end+1;
-                }
+                const auto result=backendResult(output);
                 if(!result["ok"].toBool()) {
                     std::string error=str(result,"error");
                     if(error.empty())error=errors.empty()?"The software service stopped without returning a result.":errors;
@@ -536,11 +608,20 @@ private:
             m_status->setText("Review the file, then choose Install or Import.");
         });
     }
-    void navigate(const std::string& page) {
+    void navigate(const std::string& page, bool checkForUpdates=false) {
         if(m_busy)return;
         m_debounce.stop();m_browseTitle.clear();m_browseQuery.clear();
-        cancelDetails();m_userSelected=false;if(page!="installed")cancelUpdateCheck();m_page=page;m_mode=page=="installed"?"installed":"search";
-        m_search->setText("");m_source->setCurrentIndex(0);m_reviewedFile.clear();refresh();
+        cancelDetails();m_userSelected=false;
+        if(page!="installed"){cancelUpdateCheck();discardStartupUpdates();}
+        m_page=page;m_mode=page=="installed"?"installed":"search";
+        m_search->setText("");m_source->setCurrentIndex(0);m_reviewedFile.clear();refresh(checkForUpdates);
+        if(page=="installed")loadUpdateCheckStatus();
+    }
+    void openUpdates(bool checkForUpdates=false) {
+        if(m_busy)return;
+        m_softwareView->setCurrentIndex(1);
+        m_updateFilter->setCurrentIndex(1);
+        navigate("installed",checkForUpdates);
     }
     void backToCatalog() {
         if(!m_busy && m_back->isVisible())navigate("discover");
@@ -559,7 +640,7 @@ private:
         m_detail->setContent<ui::Column>();
         m_detail->setVisible(false);m_warnings->setVisible(false);m_footer->setVisible(false);
     }
-    void refresh() {
+    void refresh(bool checkForUpdates=false) {
         if(m_busy)return;
         updateNavigation();
         const bool catalogPage=m_page=="discover" || m_page=="installed";
@@ -577,7 +658,12 @@ private:
         m_subtitle->setText(m_page=="discover"?"Find apps across your configured software sources.":"Manage installed apps and keep all software up to date.");
         if(m_page=="installed"){
             m_source->setVisible(true);m_reload->setVisible(true);m_footer->setVisible(true);
-            if(!m_libraryLoaded)loadLibrary();else{showLibrary();if(!m_updatesLoaded && !m_updateProcess)startUpdateCheck();}
+            if(m_preview)m_updateSummary->setText("Update checking is unavailable in preview.");
+            else if(checkForUpdates || !m_libraryLoaded){
+                if(m_showingCachedUpdates)showLibrary();
+                loadLibrary(checkForUpdates);
+            }
+            else{showLibrary();if(!m_updatesLoaded && !m_updateProcess)startUpdateCheck();}
             return;
         }
         m_source->setVisible(true);m_reload->setVisible(true);m_footer->setVisible(true);
@@ -588,33 +674,62 @@ private:
         ++m_updateGeneration;
         if(m_updateProcess){m_updateProcess->onFinished={};m_updateProcess->onStandardOutput={};m_updateProcess.reset();}
     }
+    void loadStartupUpdates() {
+        const auto snapshot=readUpdateSnapshot();
+        for(const auto& item:snapshot["items"].toArray()){
+            if(m_updateItems.size()==100)break;
+            const auto source=str(item,"source");
+            if((source=="deb" || source=="flatpak" || source=="snap") && item["update_available"].toBool()
+               && item["installed"].toBool() && !str(item,"install_key").empty() && !str(item,"name").empty())
+                m_updateItems.push_back(item);
+        }
+        m_showingCachedUpdates=!m_updateItems.empty();
+        if(m_showingCachedUpdates)renderUpdateCheckStatus(snapshot,true);
+    }
+    void discardStartupUpdates() {
+        if(!m_showingCachedUpdates)return;
+        m_showingCachedUpdates=false;
+        m_updateItems.clear();
+    }
     void loadLibrary(bool check=false) {
         if(m_busy)return;
-        cancelUpdateCheck();m_updateItems.clear();m_updateWarnings.clear();m_updatesLoaded=false;m_updatesComplete=false;
+        cancelUpdateCheck();
+        if(!m_showingCachedUpdates)m_updateItems.clear();
+        m_updateWarnings.clear();m_updatesLoaded=false;m_updatesComplete=false;
+        if(m_showingCachedUpdates)m_updateSummary->setText("Verifying updates from the last check…");
         request(J::object({{"op","library"}}),[this,check](const J& result){
             m_libraryItems=result["items"].toArray();m_libraryWarnings=result["warnings"].toArray();m_libraryLoaded=true;
             showLibrary();startUpdateCheck(check);
+        },false,{},[this](const std::string& error,bool){
+            if(!m_showingCachedUpdates){message("Software operation",error);return;}
+            m_updatesLoaded=true;
+            m_updateWarnings={error};
+            showLibrary();
         });
     }
     void startUpdateCheck(bool fresh=false) {
         cancelUpdateCheck();m_updatesLoaded=false;m_updatesComplete=false;
         const auto generation=m_updateGeneration;
-        m_updateSummary->setText(fresh?"Refreshing sources and checking for updates…":"Checking for updates…");m_updateAll->setEnabled(false);
+        m_updateSummary->setText(fresh?"Refreshing sources and checking for updates…":m_showingCachedUpdates?"Verifying updates from the last check…":"Checking for updates…");
+        m_updateAll->setEnabled(false);
         m_updateProcess=std::make_unique<base::Process>(&m_app.loop());
         m_updateProcess->setStandardInput(J::object({{"op","update_inventory"},{"refresh",fresh}}).serialize()+"\n");
         m_updateProcess->onFinished=[this,generation](int,bool){
             auto output=m_updateProcess->standardOutput();
             m_app.loop().post([this,generation,output]{
                 if(generation!=m_updateGeneration)return;
-                m_updateProcess.reset();m_updatesLoaded=true;J result;
-                size_t pos=0;while(pos<output.size()){
-                    auto end=output.find('\n',pos);if(end==std::string::npos)end=output.size();
-                    auto value=J::parse(output.substr(pos,end-pos));if(value && str(*value,"event")=="result")result=*value;pos=end+1;
-                }
-                m_updateItems=result["items"].toArray();m_updateWarnings=result["warnings"].toArray();
+                m_updateProcess.reset();m_updatesLoaded=true;
+                const auto result=backendResult(output);
+                auto verified=result["items"].toArray();
                 m_updatesComplete=result["ok"].toBool() && result["complete"].toBool();
+                if(!m_showingCachedUpdates || m_updatesComplete || !verified.empty()){
+                    m_showingCachedUpdates=false;
+                    m_updateItems=std::move(verified);
+                }
+                m_updateWarnings=result["warnings"].toArray();
                 if(!result["ok"].toBool())m_updateWarnings.push_back(str(result,"error").empty()?"Update checking did not complete. Try Check for Updates.":str(result,"error"));
                 if(m_page=="installed"){
+                    loadUpdateCheckStatus();
                     if(!m_busy)showLibrary();else m_libraryRenderPending=true;
                 }
             });
@@ -624,8 +739,55 @@ private:
             m_updateProcess.reset();m_updatesLoaded=true;m_updateWarnings={"Could not start update checking."};showLibrary();
         }
     }
+    void cancelUpdateCheckStatus() {
+        ++m_updateStatusGeneration;
+        if(m_updateStatusProcess){
+            m_updateStatusProcess->onFinished={};
+            m_updateStatusProcess.reset();
+        }
+    }
+    void loadUpdateCheckStatus() {
+        if(m_preview)return;
+        cancelUpdateCheckStatus();
+        const auto generation=m_updateStatusGeneration;
+        m_updateStatusProcess=std::make_unique<base::Process>(&m_app.loop());
+        m_updateStatusProcess->setStandardInput(J::object({{"op","update_check_status"}}).serialize()+"\n");
+        m_updateStatusProcess->onFinished=[this,generation](int,bool){
+            auto output=m_updateStatusProcess->standardOutput();
+            m_app.loop().post([this,generation,output]{
+                if(generation!=m_updateStatusGeneration)return;
+                m_updateStatusProcess.reset();
+                const auto result=backendResult(output);
+                renderUpdateCheckStatus(result,result["ok"].toBool());
+            });
+        };
+        std::string backend=APP_CENTER_BACKEND;
+        if(const char* path=std::getenv("CUTEFISH_APP_CENTER_BACKEND"))backend=path;
+        if(!m_updateStatusProcess->start("/usr/bin/python3",{backend})){
+            m_updateStatusProcess.reset();
+            renderUpdateCheckStatus({},false);
+        }
+    }
+    void renderUpdateCheckStatus(const J& result,bool available) {
+        const auto checked=updateTime(result["checked_at"]);
+        std::string status, detail;
+        if(!available)status="Last update check unavailable";
+        else if(checked.empty())status="No source refresh recorded yet";
+        else{
+            status="Last checked "+checked;
+            if(result["needs_check"].toBool())status+=" · Software changed since this check";
+            else if(!result["complete"].toBool())status+=" · Some sources could not be checked";
+            for(const auto& warning:result["warnings"].toArray()){
+                if(!detail.empty())detail+="\n";
+                detail+=warning.toString();
+            }
+        }
+        m_lastUpdateCheck->setText(status);
+        m_lastUpdateCheck->setToolTip(detail);
+        m_lastUpdateCheck->setVisible(true);
+    }
     void showLibrary() {
-        if(m_page!="installed" || !m_libraryLoaded)return;
+        if(m_page!="installed" || (!m_libraryLoaded && !m_showingCachedUpdates))return;
         std::map<std::string,J> records;
         for(auto item:m_libraryItems){item.insert("management",true);item.insert("update_available",false);records[str(item,"install_key")]=item;}
         for(const auto& update:m_updateItems){
@@ -643,10 +805,14 @@ private:
         }
         m_updateCount=eligible;
         auto summary=!m_updatesLoaded?"Checking for updates…":!m_updatesComplete?"Some update sources are unavailable":eligible==0?(blocked?"No installable updates available":"No updates available"):std::to_string(eligible)+" updates available · "+std::to_string(appUpdates)+" applications · "+std::to_string(eligible-appUpdates)+" system components";
-        if(blocked)summary+=" · "+std::to_string(blocked)+" held or blocked";
-        if(m_restartRequired)summary+=" · Restart required";
+        if(m_showingCachedUpdates){
+            summary=m_updatesLoaded?"Could not verify updates from the last check":"Verifying updates from the last check…";
+        }else{
+            if(blocked)summary+=" · "+std::to_string(blocked)+" held or blocked";
+            if(m_restartRequired)summary+=" · Restart required";
+        }
         m_updateSummary->setText(summary);
-        m_updateAll->setText(eligible?"Update All ("+std::to_string(eligible)+")":"Update All");
+        m_updateAll->setText(eligible && !m_showingCachedUpdates?"Update All ("+std::to_string(eligible)+")":"Update All");
         m_updateAll->setEnabled(!m_busy && m_updatesLoaded && m_updatesComplete && eligible>0);
         m_updateAll->setToolTip("Review updates for all software and sources, including system packages and runtimes hidden by the current filters.");
         static const std::vector<std::string> sources={"all","deb","flatpak","snap","appimage"};
@@ -669,8 +835,48 @@ private:
         std::string note=hidden?std::to_string(hidden)+" system components available under All software.":"";
         populate(J::object({{"items",visible},{"warnings",warnings},{"message",note}}));
     }
+    void showUpdateHistory() {
+        if(m_busy || m_preview)return;
+        request(J::object({{"op","update_history"}}),[this](const J& result){
+            m_history=std::make_unique<ui::DialogWindow>(&m_window,"Update History",620);
+            auto* content=m_history->setContent<ui::Column>();
+            content->setSpacing(14);content->setMargins(ui::Margins::all(20));
+            const auto warning=str(result,"warning");
+            if(!warning.empty())label(content,warning,13,550,true);
+
+            const auto entries=result["entries"].toArray();
+            if(entries.empty()){
+                if(warning.empty())label(content,"No updates have been recorded.",13,400,true);
+            }else{
+                auto* scroll=content->addChild<ui::ScrollView>();
+                size(scroll,-1,entries.size()==1?220:330,true);
+                auto* records=scroll->setContent<ui::Column>();
+                records->setSpacing(10);
+                for(const auto& entry:entries){
+                    auto* card=records->addChild<Panel>();
+                    card->setMargins(ui::Margins::all(12));card->setSpacing(6);size(card,-1,-1,true);
+                    label(card,str(entry,"title"),15,650,true);
+                    auto caption=updateHistoryStatus(str(entry,"status"));
+                    const auto started=updateTime(entry["started_at"]);
+                    if(!started.empty())caption+=" · "+started;
+                    auto* metadata=label(card,caption,12,550,true);
+                    metadata->setColor(ui::ColorId::DisabledText);
+                    label(card,str(entry,"message"),13,400,true);
+                }
+            }
+            auto* buttons=content->addChild<ui::Row>();size(buttons,-1,-1,true);buttons->setSpacing(12);buttons->addStretch();
+            auto* close=buttons->addChild<ui::DialogButton>("Close");
+            close->onClicked=[this]{m_history->close();};
+            auto* check=buttons->addChild<ui::DialogButton>("Check for Updates",true);
+            check->onClicked=[this]{
+                m_history->close();
+                m_app.loop().post([this]{openUpdates(true);});
+            };
+            m_history->show();
+        });
+    }
     void prepareAllUpdates() {
-        if(m_busy || !m_updatesLoaded || !m_updatesComplete || m_updateCount==0)return;
+        if(m_busy || m_showingCachedUpdates || !m_updatesLoaded || !m_updatesComplete || m_updateCount==0)return;
         request(J::object({{"op","plan_all_updates"}}),[this](const J& result){
             J plan=result["plan"];
             if(plan["groups"].size()==0){message("Software updates","No updates remain to apply.");m_libraryLoaded=false;refresh();return;}
@@ -793,6 +999,22 @@ private:
             auto* notice=content->addChild<Panel>(true);size(notice,-1,-1,true);
             label(notice,"Preferences need attention",16,650,true);label(notice,m_preferences.error(),13,400,true);
         }
+        auto* updates=content->addChild<Panel>();size(updates,-1,-1,true);
+        auto* updateSettings=updates->addChild<ui::Row>();updateSettings->setSpacing(12);size(updateSettings,-1,36,true);
+        label(updateSettings,"Background update checks",19,650,true);
+        auto* interval=updateSettings->addChild<ui::ComboBox>(std::vector<std::string>{"Off","Daily","Weekly"});
+        size(interval,180,36);
+        interval->setToolTip("Background update check frequency");
+        interval->setCurrentIndex(m_preferences.updateCheckIntervalIndex());
+        interval->setEnabled(editable);
+        interval->onActivated=[this,interval](int selected){
+            std::string error;
+            if(!m_preferences.setUpdateCheckInterval(selected,error)){
+                interval->setCurrentIndex(m_preferences.updateCheckIntervalIndex());
+                message("Background update checks",error);
+            }
+        };
+        label(updates,"Check configured sources while you are signed in. You choose when to install updates.",13,400,true);
         auto* formats=content->addChild<Panel>();size(formats,-1,-1,true);
         label(formats,"Preferred application formats",19,650,true);
         label(formats,"For new apps, try formats in this order. Existing installations are selected first unless you have saved another choice for that app.",13,400,true);
@@ -833,7 +1055,7 @@ private:
         };
         auto* reset=content->addChild<Panel>();size(reset,-1,-1,true);
         label(reset,"Restore preferences",16,650,true);
-        label(reset,"Restore the default format order, stable catalog releases and saved choices. Installed applications and system software sources are kept.",13,400,true);
+        label(reset,"Restore the default update schedule, format order, stable catalog releases and saved choices. Installed applications and system software sources are kept.",13,400,true);
         auto* restore=reset->addChild<ui::Button>("Restore Defaults");size(restore,170,36);restore->setEnabled(!m_preview);
         restore->onClicked=[this]{
             std::string error;
@@ -1078,7 +1300,7 @@ private:
         for(size_t i=0;i<m_groups.size();i++) {
             if(m_page=="installed"){
                 bool pending=m_groups[i][0]["update_available"].toBool();
-                if(i==0 && pending)label(col,"Updates available",14,650);
+                if(i==0 && pending)label(col,m_showingCachedUpdates?"Last known updates":"Updates available",14,650);
                 if(!pending && !ordinary){label(col,"Installed",14,650);ordinary=true;}
                 if(str(m_groups[i][0],"install_key")==priorKey){
                     selected=i;
@@ -1096,7 +1318,8 @@ private:
             }
             auto* row=col->addChild<AppRow>(presentation);
             if(m_groups[i].size()>1)row->setToolTip(std::to_string(m_groups[i].size())+" source or installation choices");
-            row->onClicked=[this,i]{if(m_page=="installed")m_userSelected=true;select(i);};m_rows.push_back(row);
+            if(!m_showingCachedUpdates)row->onClicked=[this,i]{if(m_page=="installed")m_userSelected=true;select(i);};
+            m_rows.push_back(row);
         }
         std::string warnings;
         for(const auto& w:result["warnings"].toArray()){if(!warnings.empty())warnings+="\n";warnings+=w.toString();}
@@ -1105,8 +1328,13 @@ private:
         if(!warnings.empty())count+=" · some sources unavailable";
         if(!str(result,"message").empty())count+=" · "+str(result,"message");
         m_status->setText(count);
-        if(!m_groups.empty())select(selected);
-        m_iconDebounce.start(1ms);
+        if(m_showingCachedUpdates){
+            m_detail->setVisible(false);
+            m_variants.clear();
+        }else{
+            if(!m_groups.empty())select(selected);
+            m_iconDebounce.start(1ms);
+        }
     }
     void cancelIcons() {
         ++m_iconGeneration;m_iconDebounce.stop();m_iconAttempted.clear();
@@ -1129,7 +1357,7 @@ private:
         }
     }
     void loadVisibleIcons() {
-        if(m_preview || m_busy || m_iconProcess || m_rows.empty() || !m_list->isVisible())return;
+        if(m_preview || m_busy || m_showingCachedUpdates || m_iconProcess || m_rows.empty() || !m_list->isVisible())return;
         const auto top=m_list->mapToWindow({0,0}).y;
         const auto bottom=top+m_list->geometry().height;
         J::Array keys;
@@ -1164,6 +1392,7 @@ private:
         if(!m_iconProcess->start("/usr/bin/python3",{backend}))m_iconProcess.reset();
     }
     void select(size_t i) {
+        if(m_showingCachedUpdates)return;
         for(size_t n=0;n<m_rows.size();n++)m_rows[n]->selected(n==i);
         m_variants=m_groups[i];m_activeApplication=groupKey(m_variants[0]);size_t selected=0;
         if(m_page!="installed")selected=preferredVariant(m_variants,m_preferences,m_sourceChoices.contains(m_activeApplication)?m_sourceChoices[m_activeApplication]:"");
@@ -1200,9 +1429,14 @@ private:
         auto find=view->addItem("Search",search);view->setItemKeyEquivalent(find,"f",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'f',search);
         auto reload=view->addItem("Reload",[this]{reloadView();});view->setItemKeyEquivalent(reload,"r",ui::ControlModifier);m_window.addShortcut(ui::ControlModifier,'r',[this]{reloadView();});
         auto* software=m_mainMenu->addSubmenu("Software");
-        software->addItem("Check for Updates",[this]{if(!m_busy){if(m_page!="installed")navigate("installed");reloadView();}});
+        auto check=software->addItem("Check for Updates",[this]{openUpdates(true);});
+        auto history=software->addItem("Update History…",[this]{showUpdateHistory();});
         auto all=software->addItem("Update All",[this]{prepareAllUpdates();});
-        software->onAboutToShow=[this,software,all]{software->setItemEnabled(all,m_page=="installed" && !m_busy && m_updatesLoaded && m_updatesComplete && m_updateCount>0);};
+        software->onAboutToShow=[this,software,check,history,all]{
+            software->setItemEnabled(check,!m_busy && !m_preview);
+            software->setItemEnabled(history,!m_busy && !m_preview);
+            software->setItemEnabled(all,m_page=="installed" && !m_busy && m_updatesLoaded && m_updatesComplete && m_updateCount>0);
+        };
         software->addItem("Refresh Debian Catalog",[this]{if(!m_busy)request(J::object({{"op","refresh"}}),[this](const J&){refresh();},true);});
         software->addItem("Refresh Flatpak Catalog",[this]{if(!m_busy)request(J::object({{"op","refresh_flatpak"}}),[this](const J&){refresh();},true);});
         auto* help=m_mainMenu->addSubmenu("Help");help->setRole(ui::MenuRole::Help);
@@ -1399,6 +1633,8 @@ private:
                 m_review->close();
                 request(J::object({{"op","apply"},{"plan",plan}}),[this](const J& result){
                     auto text=str(result,"message");
+                    const auto warning=str(result,"history_warning");
+                    if(!warning.empty())text+="\n"+warning;
                     m_status->setText(text);message("Software changes complete",text);
                     m_restartRequired=m_restartRequired || result["restart"].toBool();
                     m_libraryLoaded=false;m_updatesLoaded=false;m_variants.clear();detailEmpty();refresh();
@@ -1415,11 +1651,13 @@ private:
     std::string m_browseTitle,m_browseQuery;
     J::Array m_libraryItems,m_libraryWarnings,m_updateItems,m_updateWarnings;
     bool m_libraryLoaded=false,m_updatesLoaded=false,m_updatesComplete=false,m_libraryRenderPending=false,m_restartRequired=false,m_userSelected=false;
-    size_t m_updateCount=0;unsigned long m_updateGeneration=0;
+    bool m_showingCachedUpdates=false;
+    size_t m_updateCount=0;unsigned long m_updateGeneration=0,m_updateStatusGeneration=0;
     ui::Column* m_managementControls;
-    ui::Label* m_updateSummary;
+    ui::Label *m_updateSummary,*m_lastUpdateCheck;
     ui::ComboBox *m_softwareView,*m_updateFilter;
     ui::DialogButton* m_updateAll;
+    ui::Button* m_updateHistory;
     J::Array m_featured;bool m_featuredLoaded=false;size_t m_featuredPage=0;
     unsigned long m_discoverGeneration=0;
     size_t m_selectedVariant=0;
@@ -1444,25 +1682,27 @@ private:
     std::string m_activeApplication;
     std::map<std::string,std::string> m_sourceChoices;
     std::unique_ptr<base::Process> m_process,m_detailProcess,m_discoverProcess,m_iconProcess,m_updateProcess;
+    std::unique_ptr<base::Process> m_updateStatusProcess;
     base::Timer m_debounce,m_iconDebounce;
     std::unique_ptr<ui::FileChooser> m_chooser;
     std::unique_ptr<UpdateOperation> m_updateOperation;
     std::unique_ptr<ui::ConfirmDialog> m_message;
-    std::unique_ptr<ui::DialogWindow> m_review,m_imageViewer;
+    std::unique_ptr<ui::DialogWindow> m_review,m_imageViewer,m_history;
 };
 
 int main(int argc,char** argv) {
-    bool preview=false;std::string screenshot,path;
+    bool preview=false,updates=false;std::string screenshot,path;
     for(int i=1;i<argc;i++) {
         std::string arg=argv[i];
         if(arg=="--preview")preview=true;
+        else if(arg=="--updates")updates=true;
         else if(arg=="--screenshot" && i+1<argc){screenshot=argv[++i];preview=true;}
-        else if(arg=="--help") {std::cout<<"cutefish-app-center [FILE.deb|FILE.AppImage] [--preview] [--screenshot PATH]\n";return 0;}
+        else if(arg=="--help") {std::cout<<"cutefish-app-center [FILE.deb|FILE.AppImage|--updates] [--preview] [--screenshot PATH]\n";return 0;}
         else if(path.empty())path=arg;
     }
     ui::Application app(argc,argv,screenshot.empty()?ui::Application::Platform::Wayland:ui::Application::Platform::Headless);
     app.setApplicationId("org.cutefish.AppCenter");
-    AppCenter store(app,preview);store.show();
+    AppCenter store(app,preview,updates && path.empty());store.show();
     if(!screenshot.empty())return store.window().grab().savePng(screenshot)?0:1;
     if(!path.empty())app.loop().post([&]{store.open(path);});
     return app.run();

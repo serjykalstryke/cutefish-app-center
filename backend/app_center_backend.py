@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import struct
 import sys
@@ -53,6 +54,9 @@ def pk_info(info):
 class AppCenterError(Exception):
     pass
 
+class MutationBusy(AppCenterError):
+    pass
+
 class PackageKitFailure(AppCenterError):
     def __init__(self, message, restarts):
         super().__init__(message)
@@ -77,7 +81,8 @@ def run(args, timeout=45):
     return p.stdout
 
 def data_home():
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    path = Path(os.environ.get('XDG_DATA_HOME', ''))
+    return path if path.is_absolute() else Path.home() / '.local/share'
 
 def state_dir():
     p = data_home() / "cutefish-app-center"
@@ -90,22 +95,27 @@ def mutation_lock():
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise AppCenterError("Another store transaction is running.") from None
-        yield
+            raise MutationBusy("Another store transaction is running.") from None
+        # Acquiring the same lock establishes that an earlier backend is no
+        # longer tracking any unfinished transaction.
+        yield recover_update_history()
 
 class PackageKit:
-    def __init__(self):
+    def __init__(self, *, interactive=True):
         try:
             from gi.repository import Gio, GLib
             self.Gio, self.GLib = Gio, GLib
             self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            self.interactive = interactive
+            self.call_flags = (Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION
+                               if interactive else Gio.DBusCallFlags.NONE)
         except Exception as e:
             raise AppCenterError("Cannot reach the system package service. Install packagekit and python3-gi. " + str(e)) from None
 
     def call(self, path, iface, method, signature=None, values=()):
         params = self.GLib.Variant(signature, values) if signature else None
         return self.bus.call_sync(PK_NAME, path, iface, method, params, None,
-                                 self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION,
+                                 self.call_flags,
                                  120000, None).unpack()
 
     def transaction(self, method, signature, values, report=None, on_repository=None):
@@ -178,12 +188,17 @@ class PackageKit:
             root = ET.fromstring(xml)
             node = root.find("./interface[@name='" + PK_IFACE + "']/method[@name='SetHints']/arg")
             if node is not None and node.get("type") == "a{sv}":
-                self.call(path, PK_IFACE, "SetHints", "(a{sv})", ({"interactive": self.GLib.Variant("b", True)},))
+                hints = {'interactive': self.GLib.Variant('b', self.interactive)}
+                if not self.interactive:
+                    hints['background'] = self.GLib.Variant('b', True)
+                self.call(path, PK_IFACE, "SetHints", "(a{sv})", (hints,))
             else:
-                self.call(path, PK_IFACE, "SetHints", "(as)", (["interactive=true", "background=false"],))
+                hints = (['interactive=true', 'background=false'] if self.interactive else
+                         ['interactive=false', 'background=true'])
+                self.call(path, PK_IFACE, "SetHints", "(as)", (hints,))
             # Dispatch status signals while the method is waiting for its reply.
             self.bus.call(PK_NAME, path, PK_IFACE, method, self.GLib.Variant(signature, values), None,
-                          self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION, 120000, None, reply, None)
+                          self.call_flags, 120000, None, reply, None)
             loop.run()
             if method_error or errors or finished[0] != 1:
                 raise PackageKitFailure("; ".join(errors) or method_error or "The package transaction did not complete.", restarts)
@@ -1363,14 +1378,23 @@ def appimage_launcher(meta):
     return '\n'.join(lines) + '\n'
 
 
-def atomic_file(path, data, mode=0o600):
+def atomic_file(path, data, mode=0o600, *, durable=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix='.cutefish-app-center-')
     try:
         with os.fdopen(fd, 'wb') as output:
             output.write(data if isinstance(data, bytes) else data.encode())
-        os.chmod(temp, mode)
+            os.fchmod(output.fileno(), mode)
+            if durable:
+                output.flush()
+                os.fsync(output.fileno())
         os.replace(temp, path)
+        if durable:
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         Path(temp).unlink(missing_ok=True)
 
@@ -1436,65 +1460,231 @@ def import_appimage(target):
             shutil.rmtree(staging)
 
 
+UPDATE_HISTORY_LIMIT = 40
+UPDATE_HISTORY_MAX_BYTES = 512 * 1024
+UPDATE_HISTORY_STATUSES = {'running', 'interrupted', 'completed', 'partial', 'failed'}
+UPDATE_HISTORY_READ_WARNING = 'Update history could not be read. Check for updates to see the current package state.'
+UPDATE_HISTORY_WRITE_WARNING = 'Update history could not be saved. Check for updates to confirm the current package state.'
+
+
+def read_update_history():
+    path = state_dir() / 'update-history.json'
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return {'entries': []}
+    except OSError:
+        return {'entries': [], 'warning': UPDATE_HISTORY_READ_WARNING}
+    try:
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError('Update history must be a private regular file.')
+            raw = stream.read(UPDATE_HISTORY_MAX_BYTES + 1)
+        if len(raw) > UPDATE_HISTORY_MAX_BYTES:
+            raise ValueError('Update history exceeds its size limit.')
+        data = json.loads(raw)
+        if not isinstance(data, dict) or data.get('version') != 1:
+            raise ValueError('Unknown update history format.')
+        entries = data.get('entries')
+        if not isinstance(entries, list) or len(entries) > UPDATE_HISTORY_LIMIT:
+            raise ValueError('Invalid update history entries.')
+        for entry in entries:
+            if (not isinstance(entry, dict) or type(entry.get('started_at')) is not int or
+                    not isinstance(entry.get('status'), str) or entry['status'] not in UPDATE_HISTORY_STATUSES or
+                    not all(isinstance(entry.get(key), str) for key in ('title', 'message', 'active_source', 'restart_notice')) or
+                    not all(isinstance(entry.get(key), list) and all(isinstance(value, str) for value in entry[key])
+                            for key in ('completed', 'errors', 'pending'))):
+                raise ValueError('Invalid update history entry.')
+        return {'entries': entries}
+    except (OSError, ValueError, RecursionError):
+        return {'entries': [], 'warning': UPDATE_HISTORY_READ_WARNING}
+
+
+def save_update_history(entries):
+    del entries[UPDATE_HISTORY_LIMIT:]
+    while entries:
+        data = json.dumps(dict(version=1, entries=entries), ensure_ascii=False).encode()
+        if len(data) <= UPDATE_HISTORY_MAX_BYTES:
+            atomic_file(state_dir() / 'update-history.json', data, durable=True)
+            return
+        entries.pop()
+    raise ValueError('The update history entry exceeds its size limit.')
+
+
+def interrupted_update_message(entry):
+    lines = ['App Center stopped tracking this update before its result was confirmed.']
+    if entry['completed']:
+        lines.append('Completed: ' + ', '.join(entry['completed']) + '.')
+    if entry['active_source']:
+        lines.append('Result unconfirmed: ' + entry['active_source'] + '.')
+    lines.extend(entry['errors'])
+    if entry['pending']:
+        lines.append('Not attempted: ' + ', '.join(entry['pending']) + '.')
+    if entry['restart_notice']:
+        lines.append(entry['restart_notice'])
+    lines.append('Check for updates to see which changes are still needed.')
+    return '\n'.join(lines)
+
+
+def recover_update_history():
+    # Caller holds the mutation lock. Providers may continue asynchronously
+    # after a crash, so recovery records uncertainty and never replays a plan.
+    history = read_update_history()
+    interrupted = [entry for entry in history['entries'] if entry['status'] == 'running']
+    if interrupted:
+        for entry in interrupted:
+            entry.update(status='interrupted', message=interrupted_update_message(entry))
+        try:
+            save_update_history(history['entries'])
+        except (OSError, ValueError):
+            history['warning'] = UPDATE_HISTORY_WRITE_WARNING
+    return history
+
+
+def update_history():
+    try:
+        with mutation_lock() as history:
+            return history
+    except MutationBusy:
+        # The active writer only replaces complete snapshots atomically.
+        return read_update_history()
+    except OSError:
+        return {'entries': [], 'warning': UPDATE_HISTORY_READ_WARNING}
+
+
+class UpdateJournal:
+    """One update's durable checkpoints, written under mutation_lock."""
+    def __init__(self, history, title, sources, active_source=''):
+        self.warning = history.get('warning', '')
+        self.entries = history['entries']
+        message = 'Updating ' + active_source + '…' if active_source else 'Preparing to apply updates…'
+        self.entry = dict(started_at=int(time.time()), status='running', title=title[:512],
+                          message=message, completed=[], errors=[], pending=list(sources),
+                          active_source=active_source, restart=False, restart_notice='')
+        self.entries.insert(0, self.entry)
+        self.save()
+
+    def save(self):
+        if self.warning:
+            return
+        try:
+            save_update_history(self.entries)
+        except (OSError, ValueError):
+            self.warning = UPDATE_HISTORY_WRITE_WARNING
+
+    def before_source(self, name, pending):
+        self.entry.update(active_source=name, pending=list(pending), message='Updating ' + name + '…')
+        self.save()
+
+    def record(self, status, message, completed, errors, pending, restarts):
+        restart, notice = restart_notice(restarts)
+        self.entry.update(status=status, message=message[:12000],
+                          completed=list(completed), errors=[line[:4000] for line in errors],
+                          pending=list(pending), active_source='', restart=restart, restart_notice=notice)
+        if status != 'running':
+            self.entry['finished_at'] = int(time.time())
+        self.save()
+
+
 def apply(approved):
-    with mutation_lock():
+    with mutation_lock() as history:
         current = plan(approved["target"], approved["action"])
         if current["fingerprint"] != approved.get("fingerprint"):
             raise AppCenterError("The software or dependency plan changed. Review the operation again.")
-        target, action = current["target"], current["action"]
-        source = target["source"]
+        target = current['target']
+        if current['action'] != 'update':
+            if target['source'] != 'appimage':
+                invalidate_update_check()
+            return apply_software_plan(current, [])
+        name = str(target.get('name') or target['id'])[:512]
+        journal = None
         restarts = []
-        if source == "deb":
-            pk, method, sig, args = pk_args(target, action, 2)
-            _, restarts = pk.transaction(method, sig, args)
-            if action == 'update':
-                verify_debian_updates(args[1])
-        elif source == "flatpak":
-            if action == 'update':
-                group = current['flatpak_group']
-                flatpak_update_group(target['scope'], group['targets'], approved=group)
-            else:
-                args = ["flatpak", "--" + target["scope"], {"remove": "uninstall"}.get(action, action), "--assumeyes", "--noninteractive"]
-                args += ["--", target["remote"], flatpak_ref(target)] if action == "install" else ["--", flatpak_ref(target)]
-                stream_command(args)
-        elif source == "snap":
-            body = {"action": {"update": "refresh", "switch-channel": "refresh"}.get(action, action)}
-            if action in ("install", "switch-channel"):
-                body["channel"] = target["requested_channel"]
-                body["revision"] = target["offered_revision"]
-                if target.get("confinement") == "classic":
-                    body["classic"] = True
-            reply = snap_api("/v2/snaps/" + urllib.parse.quote(target["id"], safe=""), body)
-            if reply.get("type") == "async":
-                change_id = str(reply["change"])
-                if not change_id.isdigit():
-                    raise AppCenterError("Invalid change identifier from snapd.")
-                while True:
-                    change = snap_api("/v2/changes/" + change_id)["result"]
-                    tasks = change.get("tasks", [])
-                    progress(change.get("summary", "Working with Snap…"))
-                    if change.get("ready"):
-                        if change.get("err") or change.get("status") != "Done":
-                            raise AppCenterError(change.get("err", "Snap transaction did not complete."))
-                        break
-                    time.sleep(0.7)
-            if action in ('install', 'switch-channel'):
-                installed = snap_api('/v2/snaps/' + urllib.parse.quote(target['id'], safe=''))['result']
-                tracking = snap_channel(installed.get('tracking-channel') or installed.get('channel', 'stable'))
-                if tracking != target['requested_channel'] or str(installed.get('revision')) != target['offered_revision']:
-                    raise AppCenterError('Snap completed without reaching the reviewed channel and revision. Reload the app and check its tracking channel.')
-        elif action == "install":
-            import_appimage(target)
+
+        def before_update():
+            nonlocal journal
+            journal = UpdateJournal(history, 'Update ' + name, [], active_source=name)
+            invalidate_update_check()
+
+        try:
+            result = apply_software_plan(current, restarts, before_update=before_update)
+        except Exception as error:
+            if journal is None:
+                raise
+            if isinstance(error, PackageKitFailure):
+                restarts.extend(error.restarts)
+            _, notice = restart_notice(restarts)
+            message = 'Update could not be confirmed.\n' + str(error)
+            if notice:
+                message += '\n' + notice
+            journal.record('failed', message, [], [str(error)], [], restarts)
+            raise
+        journal.record('completed', result['message'], [name], [], [], restarts)
+        if journal.warning:
+            result['history_warning'] = journal.warning
+        return result
+
+
+def apply_software_plan(current, restarts, before_update=None):
+    target, action = current["target"], current["action"]
+    source = target["source"]
+    if source == "deb":
+        pk, method, sig, args = pk_args(target, action, 2)
+        if before_update is not None:
+            before_update()
+        _, restart = pk.transaction(method, sig, args)
+        restarts.extend(restart)
+        if action == 'update':
+            verify_debian_updates(args[1])
+    elif source == "flatpak":
+        if action == 'update':
+            group = current['flatpak_group']
+            before_update()
+            flatpak_update_group(target['scope'], group['targets'], approved=group)
         else:
-            dest = state_dir() / "appimages" / target["id"]
-            if dest.is_symlink():
-                raise AppCenterError("Invalid managed AppImage directory.")
-            if not dest.is_dir():
-                raise AppCenterError("This AppImage is no longer in the store library.")
-            (data_home() / "applications" / ("org.cutefish.AppCenter.AppImage-" + target["id"] + ".desktop")).unlink(missing_ok=True)
-            shutil.rmtree(dest)
-        restart, notice = restart_notice(restarts)
-        return {"message": "Operation completed." + (' ' + notice if notice else ''), "restart": restart}
+            args = ["flatpak", "--" + target["scope"], {"remove": "uninstall"}.get(action, action), "--assumeyes", "--noninteractive"]
+            args += ["--", target["remote"], flatpak_ref(target)] if action == "install" else ["--", flatpak_ref(target)]
+            stream_command(args)
+    elif source == "snap":
+        body = {"action": {"update": "refresh", "switch-channel": "refresh"}.get(action, action)}
+        if action in ("install", "switch-channel"):
+            body["channel"] = target["requested_channel"]
+            body["revision"] = target["offered_revision"]
+            if target.get("confinement") == "classic":
+                body["classic"] = True
+        if before_update is not None:
+            before_update()
+        reply = snap_api("/v2/snaps/" + urllib.parse.quote(target["id"], safe=""), body)
+        if reply.get("type") == "async":
+            change_id = str(reply["change"])
+            if not change_id.isdigit():
+                raise AppCenterError("Invalid change identifier from snapd.")
+            while True:
+                change = snap_api("/v2/changes/" + change_id)["result"]
+                tasks = change.get("tasks", [])
+                progress(change.get("summary", "Working with Snap…"))
+                if change.get("ready"):
+                    if change.get("err") or change.get("status") != "Done":
+                        raise AppCenterError(change.get("err", "Snap transaction did not complete."))
+                    break
+                time.sleep(0.7)
+        if action in ('install', 'switch-channel'):
+            installed = snap_api('/v2/snaps/' + urllib.parse.quote(target['id'], safe=''))['result']
+            tracking = snap_channel(installed.get('tracking-channel') or installed.get('channel', 'stable'))
+            if tracking != target['requested_channel'] or str(installed.get('revision')) != target['offered_revision']:
+                raise AppCenterError('Snap completed without reaching the reviewed channel and revision. Reload the app and check its tracking channel.')
+    elif action == "install":
+        import_appimage(target)
+    else:
+        dest = state_dir() / "appimages" / target["id"]
+        if dest.is_symlink():
+            raise AppCenterError("Invalid managed AppImage directory.")
+        if not dest.is_dir():
+            raise AppCenterError("This AppImage is no longer in the store library.")
+        (data_home() / "applications" / ("org.cutefish.AppCenter.AppImage-" + target["id"] + ".desktop")).unlink(missing_ok=True)
+        shutil.rmtree(dest)
+    restart, notice = restart_notice(restarts)
+    return {"message": "Operation completed." + (' ' + notice if notice else ''), "restart": restart}
 
 
 def inventory_provider(source, mode, query):
@@ -1638,11 +1828,13 @@ def flatpak_api(scope):
         raise AppCenterError('Flatpak management needs gir1.2-flatpak-1.0. ' + str(error)) from None
 
 
-def management_flatpaks(updates=False, refresh=False, scopes=('user', 'system')):
+def management_flatpaks(updates=False, refresh=False, scopes=('user', 'system'), *, interactive=True):
     items = []
     for scope in scopes:
         F, GLib, installation = flatpak_api(scope)
         try:
+            if not interactive:
+                installation.set_no_interaction(True)
             if refresh:
                 for remote in installation.list_remotes(None):
                     if not remote.get_disabled():
@@ -1672,12 +1864,12 @@ def management_flatpaks(updates=False, refresh=False, scopes=('user', 'system'))
     return items
 
 
-def management_provider(source, updates=False, refresh=False):
+def management_provider(source, updates=False, refresh=False, *, interactive=True):
     if source == 'flatpak':
-        return management_flatpaks(updates, refresh)
+        return management_flatpaks(updates, refresh, interactive=interactive)
     if source == 'deb':
         if updates:
-            pk = PackageKit()
+            pk = PackageKit(interactive=interactive)
             if refresh:
                 pk.transaction('RefreshCache', '(b)', (True,))
             metadata = appstream()
@@ -1731,12 +1923,14 @@ def management_provider(source, updates=False, refresh=False):
     return [dict(item, is_application=True, installed_version=item.get('version', ''), install_key=software_key(item)) for item in items]
 
 
-def management_inventory(request=None, updates=False):
+def management_inventory(request=None, updates=False, *, interactive=True):
     request = request or {}
     sources = management_sources() + ([] if updates else ['appimage'])
     items, warnings = [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        pending = {executor.submit(management_provider, source, updates, request.get('refresh', False)): source for source in sources}
+        refresh = request.get('refresh', False)
+        options = {} if interactive else {'interactive': False}
+        pending = {executor.submit(management_provider, source, updates, refresh, **options): source for source in sources}
         for future in concurrent.futures.as_completed(pending):
             try:
                 items.extend(future.result())
@@ -1745,6 +1939,106 @@ def management_inventory(request=None, updates=False):
     items.sort(key=lambda i: (i.get('name', i['id']).casefold(), i['install_key']))
     return dict(items=items, warnings=sorted(warnings), complete=not warnings,
                 update_count=sum(not item.get('update_blocked') for item in items) if updates else 0)
+
+
+UPDATE_CHECK_INTERVALS = {'daily': 24 * 60 * 60, 'weekly': 7 * 24 * 60 * 60}
+INCOMPLETE_UPDATE_RETRY = 6 * 60 * 60
+UPDATE_CHECK_MAX_BYTES = 512 * 1024
+UPDATE_PREVIEW_FIELDS = (
+    'id', 'install_key', 'source', 'name', 'summary', 'icon', 'version', 'installed_version',
+    'update_version', 'is_application', 'update_available', 'update_blocked', 'installed',
+    'architecture', 'scope', 'ref_kind', 'arch', 'branch', 'remote',
+)
+
+
+def update_check_path():
+    return data_home() / 'cutefish-app-center/update-check.json'
+
+
+def read_update_check():
+    try:
+        descriptor = os.open(update_check_path(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return {}
+            raw = stream.read(UPDATE_CHECK_MAX_BYTES + 1)
+        if len(raw) > UPDATE_CHECK_MAX_BYTES:
+            return {}
+        status = json.loads(raw)
+        if (isinstance(status, dict) and status.get('version') == 1 and
+                type(status.get('checked_at')) is int and status['checked_at'] >= 0 and
+                type(status.get('update_count')) is int and status['update_count'] >= 0 and
+                type(status.get('complete')) is bool and isinstance(status.get('warnings'), list) and
+                all(isinstance(warning, str) for warning in status['warnings'])):
+            return status
+    except (OSError, ValueError, RecursionError):
+        pass
+    return {}
+
+
+def update_check_status():
+    status = read_update_check()
+    status.pop('items', None)
+    return status
+
+
+def update_preview(items):
+    # Keep the first page small enough to paint from disk while the window opens.
+    # Only retain display fields; live inventory supplies the transaction target.
+    rows, available_bytes = [], UPDATE_CHECK_MAX_BYTES - 32 * 1024
+    for item in sorted(items, key=lambda row: bool(row.get('update_blocked')))[:100]:
+        row = {key: item[key][:1024] if isinstance(item[key], str) else item[key]
+               for key in UPDATE_PREVIEW_FIELDS if key in item and isinstance(item[key], (str, bool))}
+        available_bytes -= len(json.dumps(row, ensure_ascii=False).encode()) + 2
+        if available_bytes < 0:
+            break
+        rows.append(row)
+    return rows
+
+
+def invalidate_update_check():
+    """The caller is about to change installed software or a configured source."""
+    status = update_check_status()
+    if status and not status.get('needs_check'):
+        status.update(update_count=0, complete=False, needs_check=True, items=[],
+                      warnings=['Software changed since the last check. Check again for current results.'])
+        try:
+            atomic_file(update_check_path(), json.dumps(status) + '\n')
+        except OSError as error:
+            print(f'Could not clear the previous update count: {error}', file=sys.stderr)
+
+
+def check_for_updates(*, scheduled=False):
+    """Refresh checked providers and publish the result under the transaction lock."""
+    if scheduled and update_check_interval() is None:
+        return None
+    try:
+        with mutation_lock():
+            if scheduled:
+                interval = update_check_interval()
+                if interval is None:
+                    return None
+                previous = read_update_check()
+                age = time.time() - previous.get('checked_at', 0)
+                if not previous.get('complete', True):
+                    interval = min(interval, INCOMPLETE_UPDATE_RETRY)
+                if 'items' in previous and not previous.get('needs_check') and 0 <= age < interval:
+                    return None
+            result = management_inventory({'refresh': True}, updates=True, interactive=not scheduled)
+            status = dict(version=1, checked_at=int(time.time()), update_count=result['update_count'],
+                          complete=result['complete'], warnings=[warning[:1000] for warning in result['warnings']],
+                          items=update_preview(result['items']))
+            try:
+                atomic_file(update_check_path(), json.dumps(status, ensure_ascii=False) + '\n')
+            except OSError as error:
+                if scheduled:
+                    raise
+                result['warnings'].append('Could not save the last update check: ' + str(error))
+            return result
+    except MutationBusy:
+        if not scheduled:
+            raise
+        return None
 
 
 def changes_identity(changes):
@@ -1945,16 +2239,25 @@ def wait_snap_update(reply, report=None):
 def apply_all_updates(approved):
     if not isinstance(approved, dict) or not re.fullmatch(r'[a-f0-9]{64}', str(approved.get('fingerprint', ''))):
         raise AppCenterError('Review all updates before applying them.')
-    with mutation_lock():
+    with mutation_lock() as history:
         progress('Checking the reviewed updates…')
         current = prepare_all_updates()
         if current['fingerprint'] != approved['fingerprint']:
             raise AppCenterError('Available updates or dependencies changed. Review all updates again; nothing has been applied.')
         completed, errors, pending, restarts = [], [], [], []
+        groups = current['groups']
+        journal = UpdateJournal(history, 'Update All', [g['name'] for g in groups]) if groups else None
+        failure = None
+
         def notify(index, state, message='', percent=None, phase=''):
             emit(dict(event='update_progress', index=index, state=state, message=message, percent=percent, phase=phase))
 
-        for index, group in enumerate(current['groups']):
+        def before_source(index, group, remaining):
+            journal.before_source(group['name'], remaining)
+            if index == 0:
+                invalidate_update_check()
+
+        for index, group in enumerate(groups):
             last_report = None
             def report(message, percent=None, phase='working'):
                 nonlocal last_report
@@ -1963,6 +2266,7 @@ def apply_all_updates(approved):
                     notify(index, 'running', *current_report)
                     last_report = current_report
 
+            remaining = [g['name'] for g in groups[index+1:]]
             report('Checking the changes for this source…', phase='checking')
             try:
                 if group['source'] == 'deb':
@@ -1971,29 +2275,33 @@ def apply_all_updates(approved):
                     check_protected_changes(changes)
                     if changes_identity(changes) != changes_identity(group['changes']):
                         raise AppCenterError('Debian dependency changes no longer match the review.')
+                    before_source(index, group, remaining)
                     _, restart = PackageKit().transaction('UpdatePackages', '(tas)', (2, group['targets']), report=report)
                     restarts.extend(restart)
                     verify_debian_updates(group['targets'])
                 elif group['source'] == 'flatpak':
+                    before_source(index, group, remaining)
                     flatpak_update_group(group['scope'], group['targets'], approved=group, report=report)
                 else:
                     latest = snap_update_group(management_provider('snap', updates=True))
                     if not latest or latest['targets'] != group['targets']:
                         raise AppCenterError('Snap updates changed. Review all updates again.')
                     report('Starting the Snap refresh. Approve any administrator prompt.', phase='working')
+                    before_source(index, group, remaining)
                     reply = snap_api('/v2/snaps', dict(action='refresh', snaps=[t['name'] for t in group['targets']]))
                     wait_snap_update(reply, report=report)
-                completed.append(group['name'])
-                notify(index, 'completed')
             except Exception as error:
                 if isinstance(error, PackageKitFailure):
                     restarts.extend(error.restarts)
                 errors.append(group['name'] + ': ' + str(error))
-                pending = [g['name'] for g in current['groups'][index+1:]]
-                notify(index, 'failed', str(error))
-                for later in range(index + 1, len(current['groups'])):
-                    notify(later, 'skipped')
+                pending = remaining
+                failure = (index, str(error))
                 break
+            completed.append(group['name'])
+            if remaining:
+                journal.record('running', 'Completed: ' + ', '.join(completed) + '.',
+                               completed, errors, remaining, restarts)
+                notify(index, 'completed')
         message = ('No installable updates. Held or blocked updates were left unchanged.' if current['blocked_count'] else 'No updates are available.') if not current['groups'] else 'Updates completed.'
         if errors:
             message = ('Completed: ' + ', '.join(completed) + '.\n' if completed else '') + 'Some updates could not be completed.\n' + '\n'.join(errors)
@@ -2003,11 +2311,24 @@ def apply_all_updates(approved):
         restart, notice = restart_notice(restarts)
         if notice:
             message += '\n' + notice
-        return dict(message=message, completed=completed, errors=errors, pending=pending,
-                    restart=restart, restart_notice=notice)
+        result = dict(message=message, completed=completed, errors=errors, pending=pending,
+                      restart=restart, restart_notice=notice)
+        if journal:
+            status = ('partial' if completed else 'failed') if errors else 'completed'
+            journal.record(status, message, completed, errors, pending, restarts)
+            if journal.warning:
+                result['history_warning'] = journal.warning
+        if failure:
+            index, error = failure
+            notify(index, 'failed', error)
+            for later in range(index + 1, len(groups)):
+                notify(later, 'skipped')
+        elif groups:
+            notify(len(groups)-1, 'completed')
+        return result
 
 
-def catalog_releases():
+def read_preferences():
     config = Path(os.environ.get('XDG_CONFIG_HOME', ''))
     if not config.is_absolute():
         config = Path.home() / '.config'
@@ -2016,10 +2337,22 @@ def catalog_releases():
         if path.stat().st_size > 1024 * 1024:
             return {}
         data = json.loads(path.read_text())
-        return {key: value for key, value in data.get('catalog_releases', {}).items()
-                if key in ('flatpak', 'snap') and value in ('stable', 'beta')} if data.get('version') == 1 else {}
+        return data if isinstance(data, dict) and data.get('version') == 1 else {}
     except (OSError, ValueError, AttributeError, TypeError):
         return {}
+
+
+def update_check_interval():
+    interval = read_preferences().get('update_check_interval')
+    return UPDATE_CHECK_INTERVALS.get(interval) if isinstance(interval, str) else None
+
+
+def catalog_releases():
+    releases = read_preferences().get('catalog_releases')
+    if not isinstance(releases, dict):
+        return {}
+    return {key: value for key, value in releases.items()
+            if key in ('flatpak', 'snap') and value in ('stable', 'beta')}
 
 
 def flatpak_catalog_release(item):
@@ -2804,6 +3137,7 @@ def apply_debian_release(approved):
         current = plan_debian_release(approved.get('release'))
         if current['fingerprint'] != approved.get('fingerprint'):
             raise AppCenterError('Debian source configuration changed. Review the switch again.')
+        invalidate_update_check()
         helper = str(Path(__file__).with_name('debian_sources_helper.py'))
         try:
             result = subprocess.run(['/usr/bin/pkexec', helper], input=json.dumps(dict(release=current['release'],fingerprint=current['fingerprint']))+'\n',
@@ -2954,6 +3288,7 @@ def apply_source(approved):
         current = plan_source(approved.get('target'), approved.get('action'))
         if current['fingerprint'] != approved.get('fingerprint'):
             raise AppCenterError('The software source changed. Review this operation again.')
+        invalidate_update_check()
         target, action = current['target'], current['action']
         if target['source'] == 'deb':
             PackageKit().transaction('RepoEnable', '(sb)', (target['id'], action == 'enable'))
@@ -2995,8 +3330,12 @@ def apply_source(approved):
 
 
 def dispatch(request):
-    migrate_legacy_library()
     op = request.get("op")
+    if op == 'update_check_status':
+        return update_check_status()
+    if op == 'update_history':
+        return update_history()
+    migrate_legacy_library()
     if op == 'plan_debian_release':
         return {'plan': plan_debian_release(request.get('release'))}
     if op == 'apply_debian_release':
@@ -3016,6 +3355,8 @@ def dispatch(request):
     if op == 'library':
         return management_inventory(request)
     if op == 'update_inventory':
+        if request.get('refresh'):
+            return check_for_updates()
         return management_inventory(request, updates=True)
     if op == "details":
         return app_details(request["target"])
@@ -3047,6 +3388,13 @@ def dispatch(request):
 
 
 def main():
+    if sys.argv[1:] == ['--check-updates']:
+        try:
+            check_for_updates(scheduled=True)
+        except (AppCenterError, OSError) as error:
+            print(f'Could not run the scheduled update check: {error}', file=sys.stderr)
+            return 1
+        return 0
     try:
         request = json.loads(sys.stdin.readline(8 * 1024 * 1024))
         emit(dict(event="result", ok=True, **dispatch(request)))

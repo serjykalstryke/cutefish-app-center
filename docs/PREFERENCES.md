@@ -3,8 +3,8 @@
 Settings is available from the sidebar, application menu and Ctrl+,. It currently
 controls format order, remembered application choices and stable/beta catalog
 selection for Flatpak and Snap. Software Sources also manages repositories and
-Debian release configuration through separate reviews. Background monitoring and
-unattended installation remain separate milestones.
+Debian release configuration through separate reviews. The Settings Updates
+section controls the per-user background check schedule.
 
 ## Selection rules
 
@@ -37,7 +37,8 @@ relative. Development/tests can override the full path with
     "source_order": ["deb", "flatpak", "snap", "appimage"],
     "remember_choices": true,
     "application_choices": {},
-    "catalog_releases": {"flatpak": "stable", "snap": "stable"}
+    "catalog_releases": {"flatpak": "stable", "snap": "stable"},
+    "update_check_interval": "off"
 }
 ```
 
@@ -80,3 +81,11 @@ unrelated fields under the existing lock. Restore Defaults restores stable
 catalogs along with format order and source choices; it does not alter Debian
 sources. Debian release selection is system configuration and is not stored in
 this per-user preference file.
+
+## Background update checks
+
+`update_check_interval` accepts `off`, `daily` or `weekly`. Missing or unknown
+values use `off`. Restore Defaults disables background checks. The session
+monitor reads the same per-user preferences. A successful manual refresh also
+updates the check date, so the monitor uses it when deciding when another check
+is due. An incomplete check can be retried after six hours.

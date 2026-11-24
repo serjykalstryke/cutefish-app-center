@@ -110,8 +110,8 @@ app uses its files under `/usr/libexec` and `/usr/share`.
 
 ```sh
 python3 scripts/package.py build/cutefish-app-center \
-    --output cutefish-app-center_0.6.1_amd64.deb
-sudo apt install ./cutefish-app-center_0.6.1_amd64.deb
+    --output cutefish-app-center_0.7.0_amd64.deb
+sudo apt install ./cutefish-app-center_0.7.0_amd64.deb
 cutefish-app-center
 ```
 
@@ -151,6 +151,7 @@ normal system installation.
   **Check for Updates** refreshes configured sources. **Update All** reviews
   every source, including Debian system packages, Flatpak runtimes and Snap
   bases; its count and scope are independent of the visible filters.
+  **Update History** shows completed, failed and interrupted operations.
 - **Install from File:** drag a `.deb` or AppImage onto the page, or choose a
   file to review before installing. File drops elsewhere in the window also open
   this page. Ctrl+O opens the native file chooser.
@@ -182,8 +183,7 @@ Preferences are saved automatically. See [preference storage](docs/PREFERENCES.m
 for the file location, schema and error handling. Source management, saved stable/beta catalog selectors and per-app Snap
 release channels are available now. The Debian release selector reviews switching
 operating-system repositories to Stable, Testing or Unstable; package upgrades
-are reviewed separately with Update All. Background checks, panel integration and
-automatic installation policy remain later stages.
+are reviewed separately with Update All.
 
 Common catalog/desktop identifiers join packages for the same application.
 Exact name/package aliases fill metadata gaps only where they do not conflict
@@ -210,6 +210,31 @@ progress window shows each source and the steps its package manager reports.
 Keep App Center open while updates are running. The result keeps completed
 sources, failures, sources still to update, and restart or sign-in notices
 together. After a failure, check for updates again to review the remaining work.
+
+### Background checks and update history
+
+Under **Settings → Background update checks**, choose **Daily** or **Weekly** to check for updates
+while signed in, even when App Center is closed. Background checks are off by
+default. After installing the App Center package for the first time, sign out
+and back in to start the session monitor. It checks configured Debian, Flatpak
+and Snap sources without requesting authorization or installing updates.
+AppImages still use publisher-managed updates.
+
+When the last check found available updates, Cutefish shows the count in its
+top bar. Click it to open **Installed → Updates only**, including system
+packages. The most recently checked updates appear as the window opens and
+App Center loads the current list. Installed also shows when updates were last
+checked and whether any sources could not be checked. Open the same view using
+`cutefish-app-center --updates`.
+
+**Installed → Update History** retains up to 40 recent App Center update attempts
+for your user account. It shows confirmed changes, failures, skipped sources
+and restart notices. An interrupted attempt records the last confirmed progress.
+Use **Check for Updates** from the history to see the current state and review
+the remaining work before applying it. History covers operations started in App
+Center, including individual updates and Update All.
+
+### Application details
 
 Select an app to load its full description, publisher, versions and license
 where provided. Catalog artwork appears in a screenshot gallery; use the
@@ -287,9 +312,10 @@ python3 tests/test_management.py -v
 python3 tests/test_sources.py -v
 python3 tests/test_releases.py -v
 dbus-run-session -- python3 tests/test_packagekit_protocol.py -v
+python3 tests/test_update_indicator.py -v
 ```
 
-The protocol tests use a private fake PackageKit service and do not modify the
+The protocol and indicator tests use private D-Bus services and do not modify the
 system package database. Archive tests use `mksquashfs` and `unsquashfs` from
 `squashfs-tools`. CI runs these checks on Debian 13.
 

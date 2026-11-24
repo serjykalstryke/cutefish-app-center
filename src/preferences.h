@@ -48,6 +48,24 @@ public:
         if((source!="flatpak" && source!="snap") || (release!="stable" && release!="beta")){error="Invalid catalog release.";return false;}
         return save([&](Json& next){auto values=next["catalog_releases"];if(!values.isObject())values=Json::object();values.insert(source,release);next.insert("catalog_releases",values);},error);
     }
+    static const std::vector<std::string>& updateCheckIntervals() {
+        static const std::vector<std::string> intervals={"off","daily","weekly"};
+        return intervals;
+    }
+    int updateCheckIntervalIndex() const {
+        const auto& intervals=updateCheckIntervals();
+        const auto value=m_data["update_check_interval"].toString();
+        const auto position=std::find(intervals.begin(),intervals.end(),value);
+        return position==intervals.end()?0:static_cast<int>(position-intervals.begin());
+    }
+    bool setUpdateCheckInterval(int index,std::string& error) {
+        const auto& intervals=updateCheckIntervals();
+        if(index<0 || static_cast<size_t>(index)>=intervals.size()){
+            error="Invalid update check interval.";
+            return false;
+        }
+        return save([&](Json& next){next.insert("update_check_interval",intervals[index]);},error);
+    }
     bool rememberChoices() const {return m_data["remember_choices"].toBool(true);}
     std::map<std::string,std::string> choices() const {
         std::map<std::string,std::string> result;

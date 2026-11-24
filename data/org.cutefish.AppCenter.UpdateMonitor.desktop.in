@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Cutefish App Center Update Monitor
+Exec=@CMAKE_INSTALL_FULL_LIBEXECDIR@/cutefish-app-center/update_indicator.py
+TryExec=@CMAKE_INSTALL_FULL_LIBEXECDIR@/cutefish-app-center/update_indicator.py
+OnlyShowIn=Cutefish;
+Terminal=false

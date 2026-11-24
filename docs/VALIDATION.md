@@ -381,3 +381,18 @@ PackageKit and build-tool packages used by tests were downloaded and extracted i
   helper and Polkit policy; shared runtime and unresolved-symbol checks pass.
   Repository address/key editing, arbitrary custom mirrors, APT pin editing and
   automatic distribution downgrade are not implemented.
+
+## 0.7.0 Background checks and update recovery — November 24, 2026
+
+- Passed 211 Python tests, including isolated D-Bus tests for non-interactive
+  PackageKit refresh and Cutefish tray registration, count changes and activation.
+- Native checks covered the cached list in the opening frame, read-only rows
+  until live verification, saved schedules, interrupted or partial update
+  history, fresh review before retrying and restart notices.
+- A scheduled refresh completed on Cutefish on Debian 13 amd64. A staged package
+  with 18 sample updates showed the numbered indicator in the running Cutefish
+  top bar. Clicking it opened directly to Installed with the cached update rows
+  already visible. The fixture used separate settings and did not apply updates.
+- The built amd64 package passed runtime linkage checks. The Debian, Flatpak
+  and Snap transaction failure scenarios use fixtures. Integration with the
+  upstream package build and arm64 validation remain open.

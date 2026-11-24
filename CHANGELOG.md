@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 — 2026-11-24
+
+- Add opt-in daily or weekly checks for Debian, Flatpak and Snap while signed in to Cutefish. Installed shows when the last check ran and when results are incomplete.
+- Show the available update count in the Cutefish top bar. Clicking it opens Installed directly to the most recently checked updates while loading the current list.
+- Keep a local history of individual updates and Update All, including partial results, skipped sources, interruptions and restart notices. Check again from the history before reviewing a retry.
+
 ## 0.6.1 — 2026-11-24
 
 - Restore startup on the November 23 Cutefish toolkit by rebuilding against the current C++ interface. The Debian package now requires that toolkit revision or newer.

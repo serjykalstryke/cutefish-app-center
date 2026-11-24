@@ -10,3 +10,8 @@ Terminal=false
 Categories=System;PackageManager;
 MimeType=application/vnd.debian.binary-package;application/x-deb;application/x-iso9660-appimage;application/vnd.appimage;application/x-appimage;
 StartupNotify=true
+Actions=Updates;
+
+[Desktop Action Updates]
+Name=View Available Updates
+Exec=cutefish-app-center --updates

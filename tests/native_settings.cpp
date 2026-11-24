@@ -24,6 +24,9 @@ static void policyChecks(const std::filesystem::path& folder){
     assert(prefs.sourceOrder()==Preferences::formats());assert(prefs.rememberChoices());assert(prefs.choices().empty());
     assert(prefs.catalogRelease("flatpak")=="stable");assert(prefs.setCatalogRelease("flatpak","beta",error));assert(Preferences(path).catalogRelease("flatpak")=="beta");
     assert(!prefs.setCatalogRelease("snap","unknown",error));
+    assert(prefs.updateCheckIntervalIndex()==0);
+    assert(!prefs.setUpdateCheckInterval(-1,error));assert(!prefs.setUpdateCheckInterval(3,error));
+    assert(prefs.setUpdateCheckInterval(2,error));assert(Preferences(path).updateCheckIntervalIndex()==2);
     assert(prefs.setOrder({"snap","appimage","flatpak","deb"},error));
     J deb=J::object({{"source","deb"},{"id","browser"},{"search_key","deb-target"}});
     J flatpak=J::object({{"source","flatpak"},{"id","org.example.Browser"},{"scope","user"},{"search_key","flatpak-target"}});
@@ -39,7 +42,7 @@ static void policyChecks(const std::filesystem::path& folder){
     assert(reopened.setChoice("app:browser","snap-target",error));assert(reopened.setRememberChoices(false,error));
     assert(!Preferences(path).rememberChoices());assert(Preferences(path).choices().empty());
     assert(reopened.setChoice("app:browser","deb-target",error));assert(Preferences(path).choices().empty());
-    assert(reopened.reset(error));Preferences otherWindow(path);
+    assert(reopened.reset(error));Preferences otherWindow(path);assert(otherWindow.updateCheckIntervalIndex()==0);
     assert(reopened.setOrder({"flatpak","snap","deb","appimage"},error));
     assert(otherWindow.setChoice("app:other","flatpak-target",error));
     assert(Preferences(path).sourceOrder()[0]=="flatpak");assert(Preferences(path).choices().size()==1);
@@ -75,6 +78,10 @@ int main(int argc,char** argv){
         auto ready=[&](const std::string& publisher){return text(root,publisher) && !text(root,"Loading app details…");};
         if(stage==0){
             ui::TestInput::setKeyboardFocus(w,true);ui::TestInput::typeKey(w,',',ui::ControlModifier);
+            auto* frequency=find<ui::ComboBox>(root,[](auto* combo){return combo->toolTip()=="Background update check frequency";});
+            assert(frequency && frequency->currentIndex()==0);
+            frequency->setCurrentIndex(1);frequency->onActivated(1);
+            assert(Preferences().updateCheckIntervalIndex()==1);
             assert(text(root,"Preferred application formats"));click(w,button("Move Snap up"));stage=1;
         }
         else if(stage==1 && Preferences().sourceOrder()[1]=="snap"){click(w,button("Move Snap up"));stage=2;}
@@ -99,7 +106,8 @@ int main(int argc,char** argv){
         }else if(stage==10 && ready("snap Publisher")){
             click(w,text(root,"Settings"));click(w,text(root,"Restore Defaults"));stage=11;
         }else if(stage==11 && Preferences().sourceOrder()[0]=="deb"){
-            assert(Preferences().rememberChoices());click(w,text(root,"Catalog"));search();stage=12;
+            assert(Preferences().rememberChoices());assert(Preferences().updateCheckIntervalIndex()==0);
+            click(w,text(root,"Catalog"));search();stage=12;
         }else if(stage==12 && ready("deb Publisher")){
             std::cout<<"Settings order, exact saved choices across restart, installed-source precedence, fallback, clearing, opt-out, defaults, theme rendering and file failure checks passed.\n";app.quit();
         }

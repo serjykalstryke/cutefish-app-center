@@ -184,6 +184,96 @@ class ManagementTests(unittest.TestCase):
   with patch.object(b,'prepare_all_updates',return_value=current),patch.object(b,'PackageKit',return_value=pk),patch.object(b,'dpkg_installed',return_value=[deb(version='2')]):b.apply_all_updates(approved)
   self.assertEqual(pk.transaction.call_args.args[-1],(2,['demo;2;amd64;repo']))
 
+class UpdateHistoryTests(unittest.TestCase):
+ def setUp(self):
+  folder = tempfile.TemporaryDirectory()
+  self.addCleanup(folder.cleanup)
+  env = patch.dict(os.environ, XDG_DATA_HOME=folder.name, XDG_CACHE_HOME=str(Path(folder.name)/'cache'))
+  env.start()
+  self.addCleanup(env.stop)
+  self.path = b.state_dir()/'update-history.json'
+
+ def test_single_update_is_saved_only_after_a_current_review(self):
+  approved = dict(target=dict(deb(name='Example'), package_id='example;2;amd64;repo'), action='update', fingerprint='a'*64)
+  pk = Mock()
+  pk.transaction.return_value = ([], ['system'])
+  args = (pk, 'UpdatePackages', '(tas)', (2, ['example;2;amd64;repo']))
+  with patch.object(b, 'plan', return_value=approved), patch.object(b, 'pk_args', return_value=args), patch.object(b, 'verify_debian_updates'), patch.object(b, 'invalidate_update_check') as invalidate:
+   with self.assertRaisesRegex(b.AppCenterError, 'plan changed'):
+    b.apply(dict(approved, fingerprint='b'*64))
+   self.assertEqual(b.dispatch({'op':'update_history'})['entries'], [])
+   invalidate.assert_not_called()
+   b.apply(approved)
+  entry, = b.dispatch({'op':'update_history'})['entries']
+  self.assertEqual(entry['title'], 'Update Example')
+  self.assertEqual(entry['status'], 'completed')
+  self.assertEqual(entry['completed'], ['Example'])
+  self.assertTrue(entry['restart'])
+  self.assertIn('system restart', entry['message'])
+  self.assertGreaterEqual(entry['finished_at'], entry['started_at'])
+  self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+  invalidate.assert_called_once()
+
+ def test_partial_result_persists_errors_pending_and_restart(self):
+  groups = [group(), group('flatpak', targets=[]), group('snap', targets=[dict(name='demo', revision='2')])]
+  approved = plan(groups)
+  pk = Mock()
+  pk.transaction.side_effect = [(groups[0]['changes'], []), ([], ['session'])]
+  with patch.object(b, 'prepare_all_updates', return_value=approved), patch.object(b, 'PackageKit', return_value=pk), patch.object(b, 'verify_debian_updates'), patch.object(b, 'flatpak_update_group', side_effect=b.AppCenterError('authorization denied')), patch.object(b, 'invalidate_update_check') as invalidate:
+   result = b.apply_all_updates(approved)
+  entry, = b.update_history()['entries']
+  self.assertEqual(entry['status'], 'partial')
+  for field in ('completed', 'errors', 'pending', 'message', 'restart_notice'):
+   self.assertEqual(entry[field], result[field])
+  self.assertEqual(entry['pending'], ['snap'])
+  self.assertIn('Sign out', entry['restart_notice'])
+  invalidate.assert_called_once()
+
+ def test_running_history_recovers_pending_and_confirmed_changes_after_interruption(self):
+  groups = [group(), group('flatpak', targets=[]), group('snap', targets=[dict(name='demo', revision='2')])]
+  approved = plan(groups)
+  pk = Mock()
+  pk.transaction.side_effect = [(groups[0]['changes'], []), ([], ['system'])]
+
+  def process_exits(*args, **kwargs):
+   active, = b.update_history()['entries']
+   self.assertEqual(active['status'], 'running')
+   self.assertEqual(active['active_source'], 'flatpak')
+   self.assertEqual(active['completed'], ['deb'])
+   raise SystemExit('simulated backend interruption')
+
+  with patch.object(b, 'prepare_all_updates', return_value=approved), patch.object(b, 'PackageKit', return_value=pk), patch.object(b, 'verify_debian_updates'), patch.object(b, 'flatpak_update_group', side_effect=process_exits), patch.object(b, 'snap_api') as snap:
+   with self.assertRaises(SystemExit):
+    b.apply_all_updates(approved)
+   recovered, = b.dispatch({'op':'update_history'})['entries']
+  snap.assert_not_called()
+  self.assertEqual(recovered['status'], 'interrupted')
+  self.assertEqual(recovered['completed'], ['deb'])
+  self.assertEqual(recovered['pending'], ['snap'])
+  self.assertIn('Result unconfirmed: flatpak', recovered['message'])
+  self.assertIn('system restart', recovered['message'])
+  self.assertEqual(b.read_update_history()['entries'], [recovered])
+
+ def test_history_keeps_latest_entries_and_leaves_corrupt_file_for_recovery(self):
+  for index in range(b.UPDATE_HISTORY_LIMIT + 2):
+   with b.mutation_lock() as history:
+    journal = b.UpdateJournal(history, str(index), [])
+    journal.record('completed', 'Updates completed.', [], [], [], [])
+  entries = b.update_history()['entries']
+  self.assertEqual(len(entries), b.UPDATE_HISTORY_LIMIT)
+  self.assertEqual(entries[0]['title'], str(b.UPDATE_HISTORY_LIMIT + 1))
+  self.assertEqual(entries[-1]['title'], '2')
+
+  self.path.write_text('{')
+  warning = b.update_history()['warning']
+  self.assertIn('could not be read', warning)
+  with b.mutation_lock() as history:
+   journal = b.UpdateJournal(history, 'Update', [])
+   journal.record('completed', 'Updates completed.', [], [], [], [])
+  self.assertEqual(self.path.read_text(), '{')
+  self.assertEqual(journal.warning, warning)
+
+
 class FakeError(Exception):pass
 class FakeOperation:
  def __init__(self,ref,commit='a'*64,kind=1):self.ref,self.commit,self.kind=ref,commit,kind

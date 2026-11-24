@@ -17,6 +17,18 @@ elif request['op']=='update_inventory':
  time.sleep(0.4)
  failed=(root/'fail-source').exists()
  result=dict(items=[] if (root/'updated').exists() else updates,warnings=['snap: Source unavailable'] if failed else [],complete=not failed)
+ if request.get('refresh'):
+  status=dict(checked_at=1760000000,update_count=len(result['items']),complete=result['complete'],warnings=result['warnings'])
+  (root/'check.json').write_text(json.dumps(status))
+elif request['op']=='update_check_status':
+ check=root/'check.json'
+ if not check.exists():
+  check=Path(os.environ['XDG_DATA_HOME'])/'cutefish-app-center/update-check.json'
+ result=json.loads(check.read_text()) if check.exists() else {}
+ result.pop('items',None)
+elif request['op']=='update_history':
+ history=root/'history.json'
+ result=dict(entries=json.loads(history.read_text()) if history.exists() else [])
 elif request['op']=='details':
  item=request['target'];item.update(details_loaded=True,description='Installed management fixture',can_open=False,screenshots=[]);result=dict(item=item,warnings=[])
 elif request['op']=='plan_all_updates':
@@ -38,6 +50,9 @@ elif request['op']=='apply_all_updates':
   update(1,'failed',message='Authentication was cancelled.')
   update(2,'skipped')
   result=dict(message='Some updates could not be completed.',completed=['Debian system'],errors=['Authentication was cancelled.'],pending=['Snap system'],restart=True,restart_notice='A system restart is required.')
+  (root/'history.json').write_text(json.dumps([dict(started_at=1760000000,status='partial',title='Update all software',
+   message='Completed: Debian system.\nAuthentication was cancelled.\nNot attempted: Snap system.\nA system restart is required.')]))
+  (root/'check.json').write_text(json.dumps(dict(checked_at=1760000000,update_count=0,complete=False,needs_check=True,warnings=['Software changed since the last check.'])))
  else:
   update(1,'completed');update(2,'completed');(root/'updated').touch()
   result=dict(message='Updates completed.',errors=[],restart=True,restart_notice='A system restart is required.')

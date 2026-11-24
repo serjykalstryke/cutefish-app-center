@@ -26,7 +26,7 @@ def check_runtime(binary):
 parser=argparse.ArgumentParser()
 parser.add_argument('binary',type=Path)
 parser.add_argument('--check-only',action='store_true',help='Check runtime linkage without creating a package')
-parser.add_argument('--output',type=Path,default=Path('cutefish-app-center_0.6.1_amd64.deb'))
+parser.add_argument('--output',type=Path,default=Path('cutefish-app-center_0.7.0_amd64.deb'))
 args=parser.parse_args()
 check_runtime(args.binary)
 if args.check_only:raise SystemExit(0)
@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory(prefix='cutefish-app-center-package-') as temp:
  copy(args.binary,'usr/bin/cutefish-app-center',True)
  copy(source/'backend/app_center_backend.py','usr/libexec/cutefish-app-center/app_center_backend.py',True)
  copy(source/'backend/debian_sources_helper.py','usr/libexec/cutefish-app-center/debian_sources_helper.py',True)
+ copy(source/'backend/update_indicator.py','usr/libexec/cutefish-app-center/update_indicator.py',True)
  copy(source/'backend/debian_releases.py','usr/libexec/cutefish-app-center/debian_releases.py')
  copy(source/'data/org.cutefish.AppCenter.policy','usr/share/polkit-1/actions/org.cutefish.AppCenter.policy')
  copy(source/'data/org.cutefish.AppCenter.desktop','usr/share/applications/org.cutefish.AppCenter.desktop')
@@ -47,13 +48,18 @@ with tempfile.TemporaryDirectory(prefix='cutefish-app-center-package-') as temp:
  copy(source/'data/branding.json','usr/share/cutefish-app-center/branding.json')
  copy(source/'LICENSE','usr/share/doc/cutefish-app-center/copyright')
  copy(source/'README.md','usr/share/doc/cutefish-app-center/README.md')
+ autostart=root/'etc/xdg/autostart/org.cutefish.AppCenter.UpdateMonitor.desktop'
+ autostart.parent.mkdir(parents=True)
+ template=source/'data/org.cutefish.AppCenter.UpdateMonitor.desktop.in'
+ autostart.write_text(template.read_text().replace('@CMAKE_INSTALL_FULL_LIBEXECDIR@','/usr/libexec'))
+ autostart.chmod(0o644)
  size=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())//1024
  (root/'DEBIAN').mkdir()
  (root/'DEBIAN/control').write_text(f'''Package: cutefish-app-center
-Version: 0.6.1
+Version: 0.7.0
 Architecture: amd64
 Maintainer: Cutefish App Center contributors
-Provides: cutefish-store (= 0.6.1)
+Provides: cutefish-store (= 0.7.0)
 Replaces: cutefish-store
 Conflicts: cutefish-store
 Section: admin
