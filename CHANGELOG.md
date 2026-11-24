@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 — 2026-11-24
+
+- Restore startup on the November 23 Cutefish toolkit by rebuilding against the current C++ interface. The Debian package now requires that toolkit revision or newer.
+
 ## 0.6.0 — 2026-11-10
 
 - Add saved Stable/Beta catalog selectors for Flatpak and Snap; filter alternatives before application grouping and preserve every installed/update target.
